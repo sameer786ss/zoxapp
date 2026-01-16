@@ -1,7 +1,7 @@
-import { useRef, useEffect, useCallback, useState, useLayoutEffect } from 'react';
+import { useRef, useCallback, useState, useLayoutEffect } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import MessageBubble from './MessageBubble';
-import { useAgentStore, Message } from '@/stores/useAgentStore';
+import { Message } from '@/stores/useAgentStore';
 import { cn } from '@/lib/utils';
 import { ChevronDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -11,200 +11,138 @@ interface VirtualizedMessageListProps {
 }
 
 export default function VirtualizedMessageList({ messages }: VirtualizedMessageListProps) {
-    const scrollContainerRef = useRef<HTMLDivElement>(null);
+    if (messages.length === 0) return null;
 
-    const [showScrollButton, setShowScrollButton] = useState(false);
-    const prevMessagesLengthRef = useRef(messages.length);
-    const prevLastContentRef = useRef('');
+    // Use a unified sticky-scroll implementation that handles both cases
+    // But since the user complained about "tool called", we likely have many messages or complex content
+    // We will stick to the virtualized implementation for robustness, or simple for small lists.
 
-    // Get streaming state from store
-    const isStreaming = useAgentStore((state) => state.isStreaming);
+    // Actually, simplifying to ONE implementation (Virtualized) is often better for consistency unless there's a huge perf penalty.
+    // But let's keep the split if the simple one works well. 
+    // The user's issue is likely with the Virtualized one behaving badly.
 
-
-
-    // Track if we should auto-scroll
-    const shouldAutoScrollRef = useRef(true);
-
-    // Handle scroll events to detect user intent
-    const handleScroll = useCallback(() => {
-        const container = scrollContainerRef.current;
-        if (!container) return;
-
-        const { scrollTop, scrollHeight, clientHeight } = container;
-        const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-
-        // If user scrolls up significantly (>50px), disable auto-scroll
-        const isAtBottomNow = distanceFromBottom < 50;
-
-        setShowScrollButton(!isAtBottomNow);
-
-        // Update auto-scroll preference:
-        // - If at bottom, re-enable auto-scroll
-        // - If scrolled up, disable it (user wants to read history)
-        if (isAtBottomNow) {
-            shouldAutoScrollRef.current = true;
-        } else if (distanceFromBottom > 100) {
-            shouldAutoScrollRef.current = false;
-        }
-    }, []);
-
-    // Scroll to bottom helper
-    const scrollToBottom = useCallback((instant = false) => {
-        const container = scrollContainerRef.current;
-        if (!container) return;
-
-        if (instant) {
-            container.scrollTop = container.scrollHeight;
-        } else {
-            container.scrollTo({
-                top: container.scrollHeight,
-                behavior: 'smooth'
-            });
-        }
-        shouldAutoScrollRef.current = true; // enhancing: manual scroll-to-bottom re-enables lock
-    }, []);
-
-    // Auto-scroll when new message is added
-    useEffect(() => {
-        if (messages.length > prevMessagesLengthRef.current) {
-            // New message added - ALWAYS snap to bottom for new messages
-            shouldAutoScrollRef.current = true;
-            scrollToBottom(false);
-        }
-        prevMessagesLengthRef.current = messages.length;
-    }, [messages.length, scrollToBottom]);
-
-    // Auto-scroll during streaming (content updates)
-    useLayoutEffect(() => {
-        if (!isStreaming) return;
-
-        const lastMessage = messages[messages.length - 1];
-        if (!lastMessage) return;
-
-        const lastContent = typeof lastMessage.content === 'string'
-            ? lastMessage.content
-            : '';
-
-        const contentChanged = lastContent.length !== prevLastContentRef.current.length;
-
-        // Only scroll if content changed AND we are in "stick to bottom" mode
-        if (contentChanged && shouldAutoScrollRef.current) {
-            requestAnimationFrame(() => {
-                const container = scrollContainerRef.current;
-                if (container) {
-                    container.scrollTop = container.scrollHeight;
-                }
-            });
-        }
-
-        prevLastContentRef.current = lastContent;
-    }, [messages, isStreaming]);
-
-    // Initial scroll to bottom
-    useEffect(() => {
-        scrollToBottom(true);
-    }, []);
-
-    // Simple list for few messages (no virtualization needed)
-    if (messages.length < 20) {
-        return (
-            <div className="relative h-full">
-                <div
-                    ref={scrollContainerRef}
-                    onScroll={handleScroll}
-                    className="h-full overflow-y-auto scroll-smooth"
-                >
-                    <div className="space-y-1 p-2">
-                        {messages.map((msg) => (
-                            <MessageBubble key={msg.id} message={msg} />
-                        ))}
-                    </div>
-                </div>
-
-                {/* Scroll to bottom button */}
-                {showScrollButton && (
-                    <ScrollToBottomButton onClick={() => {
-
-                        setShowScrollButton(false);
-                        scrollToBottom(true);
-                    }} />
-                )}
-            </div>
-        );
-    }
-
-    // Virtualized list for many messages
     return (
-        <VirtualizedList
-            messages={messages}
-            scrollContainerRef={scrollContainerRef}
-            handleScroll={handleScroll}
-            showScrollButton={showScrollButton}
-            onScrollToBottom={() => {
-
-                setShowScrollButton(false);
-                scrollToBottom(true);
-            }}
-        />
+        <div className="h-full w-full relative">
+            {messages.length < 20 ? (
+                <SimpleList messages={messages} />
+            ) : (
+                <VirtList messages={messages} />
+            )}
+        </div>
     );
 }
 
-// Separated virtualized list component
-interface VirtualizedListProps {
-    messages: Message[];
-    scrollContainerRef: React.RefObject<HTMLDivElement | null>;
-    handleScroll: () => void;
-    showScrollButton: boolean;
-    onScrollToBottom: () => void;
+// --- Simple List (DOM-based) ---
+function SimpleList({ messages }: { messages: Message[] }) {
+    const scrollRef = useRef<HTMLDivElement>(null);
+    const [showButton, setShowButton] = useState(false);
+    const isSticky = useRef(true); // Default to sticky
+
+    const scrollToBottom = () => {
+        if (scrollRef.current) {
+            scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'auto' }); // Instant for responsiveness
+        }
+    };
+
+    const handleScroll = () => {
+        if (!scrollRef.current) return;
+        const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
+        const dist = scrollHeight - scrollTop - clientHeight;
+
+        // Tolerance of 50px
+        const atBottom = dist < 50;
+        isSticky.current = atBottom;
+        setShowButton(!atBottom);
+    };
+
+    // Auto-scroll on new messages or content updates
+    useLayoutEffect(() => {
+        if (isSticky.current) {
+            scrollToBottom();
+        }
+    }, [messages, messages.length, messages[messages.length - 1]?.content]);
+
+    return (
+        <>
+            <div
+                ref={scrollRef}
+                className="h-full overflow-y-auto scroll-smooth p-4 space-y-4"
+                onScroll={handleScroll}
+            >
+                {messages.map((msg) => (
+                    <MessageBubble key={msg.id} message={msg} />
+                ))}
+            </div>
+            {showButton && (
+                <ScrollToBottomButton onClick={() => {
+                    scrollToBottom();
+                    isSticky.current = true;
+                }} />
+            )}
+        </>
+    );
 }
 
-function VirtualizedList({
-    messages,
-    scrollContainerRef,
-    handleScroll,
-    showScrollButton,
-    onScrollToBottom
-}: VirtualizedListProps) {
+// --- Virtualized List (TanStack Virtual) ---
+function VirtList({ messages }: { messages: Message[] }) {
+    const parentRef = useRef<HTMLDivElement>(null);
+    const isSticky = useRef(true);
+    const [showButton, setShowButton] = useState(false);
 
+    // Estimate size logic
     const estimateSize = useCallback((index: number) => {
         const msg = messages[index];
         if (!msg) return 100;
-
         const content = typeof msg.content === 'string' ? msg.content : '';
-        const length = content.length;
-        const hasCode = content.includes('```');
-
-        if (hasCode) {
-            return Math.max(200, Math.min(600, 100 + length * 0.15));
-        }
-        return Math.max(80, Math.min(400, 60 + length * 0.12));
+        // Rough estimation
+        return 80 + (content.length * 0.5);
     }, [messages]);
 
     const virtualizer = useVirtualizer({
         count: messages.length,
-        getScrollElement: () => scrollContainerRef.current,
+        getScrollElement: () => parentRef.current,
         estimateSize,
-        overscan: 5,
+        overscan: 10,
         getItemKey: (index) => messages[index]?.id || String(index),
     });
 
-    // Scroll to end when virtualizer updates
-    // Removed to prevent conflict with parent's auto-scroll logic
-    // The parent manages scroll via scrollContainerRef directly
-    /*
-    useEffect(() => {
-        if (messages.length > 0) {
-            virtualizer.scrollToIndex(messages.length - 1, { align: 'end' });
+    const scrollToIndex = useCallback((index: number) => {
+        try {
+            virtualizer.scrollToIndex(index, { align: 'end' });
+        } catch (e) {
+            // Ignore virtualizer errors during initial render
         }
-    }, [messages.length]);
-    */
+    }, [virtualizer]);
+
+    // Scroll handler
+    const handleScroll = () => {
+        if (!parentRef.current) return;
+        const { scrollTop, scrollHeight, clientHeight } = parentRef.current;
+        const dist = scrollHeight - scrollTop - clientHeight;
+
+        // If dist < 50, user is at bottom -> Sticky = true
+        // If dist > 50, user scrolled up -> Sticky = false
+        const atBottom = dist < 100; // slightly larger threshold for virtualization
+        isSticky.current = atBottom;
+        setShowButton(!atBottom);
+    };
+
+    // Effect: Scroll to bottom when messages change IF sticky
+    useLayoutEffect(() => {
+        if (isSticky.current && messages.length > 0) {
+            // Use requestAnimationFrame to ensure virtualizer has measured new items
+            requestAnimationFrame(() => {
+                scrollToIndex(messages.length - 1);
+            });
+        }
+    }, [messages.length, messages[messages.length - 1]?.content, scrollToIndex]);
 
     return (
-        <div className="relative h-full">
+        <div className="h-full relative">
             <div
-                ref={scrollContainerRef}
+                ref={parentRef}
                 onScroll={handleScroll}
-                className="h-full overflow-y-auto"
+                className="h-full overflow-y-auto w-full"
             >
                 <div
                     style={{
@@ -224,6 +162,9 @@ function VirtualizedList({
                                 left: 0,
                                 width: '100%',
                                 transform: `translateY(${virtualItem.start}px)`,
+                                paddingLeft: '1rem',
+                                paddingRight: '1rem',
+                                paddingTop: '0.5rem',
                             }}
                         >
                             <MessageBubble message={messages[virtualItem.index]} />
@@ -232,27 +173,29 @@ function VirtualizedList({
                 </div>
             </div>
 
-            {showScrollButton && (
-                <ScrollToBottomButton onClick={onScrollToBottom} />
+            {showButton && (
+                <ScrollToBottomButton onClick={() => {
+                    scrollToIndex(messages.length - 1);
+                    isSticky.current = true;
+                }} />
             )}
         </div>
     );
 }
 
-// Scroll to bottom button component
 function ScrollToBottomButton({ onClick }: { onClick: () => void }) {
     return (
         <Button
-            size="sm"
+            size="icon"
             variant="secondary"
             className={cn(
-                "absolute bottom-4 right-4 rounded-full shadow-lg z-10",
-                "bg-primary text-white hover:bg-primary/90",
-                "animate-fade-in"
+                "absolute bottom-6 right-6 rounded-full shadow-xl z-50",
+                "bg-primary text-primary-foreground hover:bg-primary/90",
+                "h-10 w-10 animate-in fade-in zoom-in duration-200"
             )}
             onClick={onClick}
         >
-            <ChevronDown className="w-4 h-4" />
+            <ChevronDown className="w-5 h-5" />
         </Button>
     );
 }
