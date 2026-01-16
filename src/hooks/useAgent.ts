@@ -41,6 +41,7 @@ export function useAgent() {
 
     // Setup event listeners
     useEffect(() => {
+        let isMounted = true;
         const listeners: Promise<UnlistenFn>[] = [];
 
         // Function to reset/start streaming timeout
@@ -50,8 +51,10 @@ export function useAgent() {
             }
             streamingTimeoutRef.current = window.setTimeout(() => {
                 console.warn('[useAgent] Streaming timeout - resetting status');
-                storeRef.current.setStatus('idle');
-                storeRef.current.setStreaming(false);
+                if (isMounted) { // Only update state if component is still mounted
+                    storeRef.current.setStatus('idle');
+                    storeRef.current.setStreaming(false);
+                }
             }, STREAMING_TIMEOUT_MS);
         };
 
@@ -65,24 +68,24 @@ export function useAgent() {
 
         // Listen for thinking content (displayed in input box)
         listeners.push(listen<string>('agent-thinking', (event) => {
+            if (!isMounted) return;
             const { setThinkingText } = storeRef.current;
             setThinkingText(event.payload);
-            // Reset timeout on any activity
             resetStreamingTimeout();
         }));
 
-        // Listen for streaming chunks (chunked streaming - every 100 chars)
+        // Listen for streaming chunks
         listeners.push(listen<string>('agent-stream-chunk', (event) => {
+            if (!isMounted) return;
             const { updateStreamingMessage, setStreaming } = storeRef.current;
-            // Update or create model message with accumulated text
             updateStreamingMessage(event.payload);
             setStreaming(true);
-            // Reset timeout on any activity
             resetStreamingTimeout();
         }));
 
-        // Listen for Streaming Status (lightweight)
+        // Listen for Streaming Status
         listeners.push(listen<boolean>('agent-streaming', (event) => {
+            if (!isMounted) return;
             const { setStreaming, setStatus } = storeRef.current;
             setStreaming(event.payload);
             if (event.payload) {
@@ -92,6 +95,7 @@ export function useAgent() {
 
         // Listen for Status Updates
         listeners.push(listen<string>('agent-status', (event) => {
+            if (!isMounted) return;
             const status = event.payload.toLowerCase();
             const { setStatus, setStreaming } = storeRef.current;
 
@@ -108,16 +112,16 @@ export function useAgent() {
             }
         }));
 
-        // Listen for Tool Results - payload is { tool, parameters, result }
+        // Listen for Tool Results
         interface ToolResultPayload {
             tool: string;
             parameters: unknown;
             result: string;
         }
         listeners.push(listen<ToolResultPayload>('agent-tool-result', (event) => {
+            if (!isMounted) return;
             const { addMessage, setStreaming } = storeRef.current;
             const { tool, result } = event.payload;
-            // Format tool result for display
             const content = `**${tool}**\n\`\`\`\n${result}\n\`\`\``;
             addMessage({ role: 'tool', content });
             setStreaming(false);
@@ -125,6 +129,7 @@ export function useAgent() {
 
         // Listen for Approval Requests
         listeners.push(listen<ApprovalRequest>('agent-approval-request', (event) => {
+            if (!isMounted) return;
             console.log('[useAgent] Approval request:', event.payload);
             setPendingTool({
                 name: event.payload.tool,
@@ -134,10 +139,9 @@ export function useAgent() {
 
         // Listen for File Access events
         listeners.push(listen<FileAccessEvent>('agent-file-access', (event) => {
+            if (!isMounted) return;
             const { action, path } = event.payload;
             console.log(`[FileAccess] ${action}: ${path}`);
-
-            // Open the file in the editor
             if (path && (action === 'read' || action === 'write')) {
                 openFile(path, 'agent');
             }
@@ -145,6 +149,7 @@ export function useAgent() {
 
         // Listen for Stream End
         listeners.push(listen<string>('agent-stream-end', (event) => {
+            if (!isMounted) return;
             const { setStatus, setStreaming } = storeRef.current;
             console.log('[useAgent] Stream ended:', event.payload);
             setStatus('idle');
@@ -154,19 +159,25 @@ export function useAgent() {
 
         // Listen for Errors
         listeners.push(listen<string>('agent-error', (event) => {
+            if (!isMounted) return;
             console.error('[Agent Error]', event.payload);
             storeRef.current.setStatus('idle');
             storeRef.current.setStreaming(false);
             clearStreamingTimeout();
         }));
 
-        // Resolve all listeners and store for cleanup
+        // Robust cleanup: only set if mounted, cleanup immediately if unmounted
         Promise.all(listeners).then((unlistenFns) => {
-            unlistenRef.current = unlistenFns;
+            if (isMounted) {
+                unlistenRef.current = unlistenFns;
+            } else {
+                unlistenFns.forEach(fn => fn());
+            }
         });
 
-        // Cleanup listeners on unmount - synchronously call stored unlisten functions
+        // Cleanup on unmount
         return () => {
+            isMounted = false;
             unlistenRef.current.forEach((unlisten) => unlisten());
             unlistenRef.current = [];
             clearStreamingTimeout();

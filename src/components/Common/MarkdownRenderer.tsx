@@ -122,7 +122,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, classN
 
                     // Paragraphs
                     p({ children }) {
-                        return <p className="my-2 leading-relaxed">{children}</p>;
+                        return <p className="my-2 leading-relaxed whitespace-pre-wrap">{children}</p>;
                     },
 
                     // Horizontal rule

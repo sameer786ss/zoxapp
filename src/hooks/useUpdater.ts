@@ -81,7 +81,9 @@ export function useUpdater(): UseUpdaterReturn {
         };
     }, []);
 
-    // Check for updates on mount (after a delay to not block startup)
+    // Check for updates on mount - DISABLED to prevent infinite loops/multiple checks
+    // Updates should be triggered manually or via a single singleton component
+    /*
     useEffect(() => {
         const timer = setTimeout(() => {
             checkForUpdates();
@@ -89,6 +91,7 @@ export function useUpdater(): UseUpdaterReturn {
 
         return () => clearTimeout(timer);
     }, []);
+    */
 
     const handleError = useCallback((err: unknown, code: UpdateError['code'] = 'unknown') => {
         const message = err instanceof Error ? err.message : String(err);

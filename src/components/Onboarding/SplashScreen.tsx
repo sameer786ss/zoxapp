@@ -68,60 +68,20 @@ export default function SplashScreen({ onReady }: SplashScreenProps) {
                 />
             </div>
 
-            {/* Logo with shimmer effect */}
+            {/* Logo */}
             <motion.div
                 initial={{ opacity: 0, scale: 0.8 }}
                 animate={{ opacity: 1, scale: 1 }}
                 transition={{ duration: 0.5, ease: 'easeOut' }}
                 className="relative mb-8"
             >
-                {/* Logo container */}
                 <div className="relative w-32 h-32 flex items-center justify-center">
-                    {/* Rotating ring */}
-                    <motion.div
-                        className="absolute inset-0 rounded-full border-2 border-primary/30"
-                        animate={{ rotate: 360 }}
-                        transition={{
-                            duration: 3,
-                            repeat: Infinity,
-                            ease: 'linear',
-                        }}
-                    >
-                        <div className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-primary" />
-                    </motion.div>
-
-                    {/* ZOX Logo */}
-                    <motion.div
-                        className="text-5xl font-black tracking-tighter bg-gradient-to-br from-primary via-blue-400 to-primary bg-clip-text text-transparent"
-                        animate={{
-                            backgroundPosition: ['0% 50%', '100% 50%', '0% 50%'],
-                        }}
-                        transition={{
-                            duration: 3,
-                            repeat: Infinity,
-                            ease: 'easeInOut',
-                        }}
-                        style={{
-                            backgroundSize: '200% 200%',
-                        }}
-                    >
-                        ZOX
-                    </motion.div>
+                    <img
+                        src="/zox-logo.png"
+                        alt="ZOX Logo"
+                        className="w-24 h-24 object-contain filter drop-shadow-lg"
+                    />
                 </div>
-
-                {/* Shimmer effect overlay */}
-                <motion.div
-                    className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -skew-x-12"
-                    animate={{
-                        x: ['-200%', '200%'],
-                    }}
-                    transition={{
-                        duration: 2,
-                        repeat: Infinity,
-                        ease: 'easeInOut',
-                        repeatDelay: 1,
-                    }}
-                />
             </motion.div>
 
             {/* Status text */}

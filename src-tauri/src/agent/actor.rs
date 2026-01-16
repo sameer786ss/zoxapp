@@ -739,10 +739,15 @@ impl AgentActor {
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(30),
                 tokio::task::spawn_blocking({
-                    let tool_impl = get_tool_by_name(tool).unwrap();
+                    let tool_name = tool.to_string();
                     let params = params_str.clone();
                     let workspace = self.workspace.clone();
-                    move || tool_impl.execute(&params, &workspace)
+                    move || {
+                        match get_tool_by_name(&tool_name) {
+                            Some(tool_impl) => tool_impl.execute(&params, &workspace),
+                            None => Err(format!("Tool {} not found during execution", tool_name).into())
+                        }
+                    }
                 })
             ).await;
             

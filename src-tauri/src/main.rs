@@ -66,12 +66,14 @@ fn main() {
                 }
             }
 
-            // 6. Emit app-ready event for splash screen
-            let handle = app.handle().clone();
-            std::thread::spawn(move || {
-                // Small delay to ensure frontend is ready
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                handle.emit("app-ready", true).ok();
+            // 6. Setup listener for frontend ready signal
+            // The frontend will emit 'frontend_loaded' when it's mounted and ready
+            let handle_clone = app.handle().clone();
+            app.listen_any("frontend_loaded", move |_| {
+                 println!("[Main] Frontend loaded, performing startup checks...");
+                 // Small delay to allow UI to settle
+                 std::thread::sleep(std::time::Duration::from_millis(100));
+                 handle_clone.emit("app-ready", true).ok();
             });
 
             Ok(())
@@ -157,12 +159,9 @@ fn load_api_keys() -> Vec<String> {
     // DEVELOPMENT FALLBACK - Remove in production
     #[cfg(debug_assertions)]
     {
-        println!("[Config] Using development fallback API keys");
-        return vec![
-            "AIzaSyAyLQgqmO0PzbePQzCD5S7slHa_Z-jLMHU".into(),
-            "AIzaSyA_7Bnzeiq8eBYKAm_16pTkyQEvdAC6KDg".into(),
-            "AIzaSyCGUick6BcbreCGBKg8pgL4LiyTYw9hlx8".into(),
-        ];
+        println!("[Config] Using development fallback API keys (None in repo)");
+        // Intentionally empty to prevent accidental leaks
+        return vec![];
     }
     
     #[cfg(not(debug_assertions))]

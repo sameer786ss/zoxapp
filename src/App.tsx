@@ -133,6 +133,11 @@ function App() {
 
   // Listen for app-ready event from backend
   useEffect(() => {
+    // Notify backend that frontend is mounted and listeners are ready
+    import('@tauri-apps/api/event').then(({ emit }) => {
+      emit('frontend_loaded', true).catch(err => console.error('Failed to emit loaded:', err));
+    });
+
     listen<boolean>('app-ready', () => {
       // Small delay for smooth transition
       setTimeout(() => setIsInitializing(false), 500);
@@ -140,8 +145,9 @@ function App() {
 
     // Fallback timeout in case backend doesn't emit
     const fallbackTimeout = setTimeout(() => {
+      console.warn("Backend didn't respond to frontend_loaded, forcing startup");
       setIsInitializing(false);
-    }, 3000);
+    }, 3500);
 
     return () => {
       unlistenRef.current?.();
