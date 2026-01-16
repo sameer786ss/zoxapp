@@ -8,7 +8,7 @@ mod providers;
 mod setup;
 mod state;
 
-use tauri::Manager;
+use tauri::{Manager, Emitter};
 use state::app_state::{AppState, ApprovalState, ConnectionMode};
 use std::sync::Arc;
 use parking_lot::RwLock;

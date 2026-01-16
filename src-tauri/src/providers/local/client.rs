@@ -2,21 +2,22 @@
 //!
 //! Provides local inference using GGUF models via Candle.
 //! Supports CUDA (NVIDIA), Metal (Apple), and CPU fallback.
-//!
-//! Binaries are loaded from %APPDATA%/zox/binaries/ to avoid system dependencies.
 
+use std::fs::File;
+use std::io::BufReader;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use async_trait::async_trait;
-use futures::stream::{self, Stream};
-use std::pin::Pin;
+use futures::stream;
 
-use crate::providers::{ModelProvider, CompletionResult, ProviderCapabilities, ModelTier, Message};
+use crate::providers::{
+    ModelProvider, CompletionResult, ProviderCapabilities, ModelTier, Message
+};
 use crate::setup::paths::get_model_path;
 
-use candle_core::{Device, Tensor, DType};
+use candle_core::Device;
+use candle_core::quantized::gguf_file::Content;
 use candle_transformers::models::quantized_llama::ModelWeights;
 use tokenizers::Tokenizer;
 
@@ -48,513 +49,380 @@ RESPONSE FORMAT (STRICT XML):
 
 For text responses WITHOUT tools:
 <message>Your response here</message>
-
-RULES:
-1. ONE tool per response
-2. Wait for OBSERVATION before continuing
-3. Keep thinking brief (1 sentence)
-4. ALWAYS wrap responses in XML tags
-5. NO markdown code blocks
-6. NEVER use JSON - XML ONLY
-7. For messages without tools, ALWAYS use <message> tags
 <|im_end|>
 "#;
 
-
-/// Local provider configuration
-#[derive(Clone)]
-pub struct LocalConfig {
-    pub model_path: PathBuf,
-    pub ctx_size: u32,
-    pub max_tokens: usize,
-}
-
-impl Default for LocalConfig {
-    fn default() -> Self {
-        Self {
-            model_path: get_model_path(),
-            ctx_size: 2048,
-            max_tokens: 2048,
-        }
-    }
-}
-
-/// Model loading state
+/// Provider state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModelState {
+pub enum ProviderState {
     Unloaded,
     Loading,
-    Loaded,
-    Unloading,
+    Ready,
     Error,
 }
 
-/// Device type for GPU acceleration
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeviceType {
-    Cpu,
-    Cuda,
-    Metal,
+/// Loaded model and tokenizer
+struct LoadedModel {
+    weights: ModelWeights,
+    tokenizer: Tokenizer,
+    device: Device,
 }
 
-impl std::fmt::Display for DeviceType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DeviceType::Cpu => write!(f, "CPU"),
-            DeviceType::Cuda => write!(f, "CUDA"),
-            DeviceType::Metal => write!(f, "Metal"),
-        }
-    }
+/// Local model provider using Candle GGUF
+/// Named LocalLlamaProvider for compatibility with existing code
+pub struct LocalLlamaProvider {
+    state: Arc<RwLock<ProviderState>>,
+    model: Arc<RwLock<Option<LoadedModel>>>,
+    model_path: Arc<RwLock<Option<PathBuf>>>,
+    device_name: String,
 }
 
-/// Local provider using Candle for GGUF models
-pub struct CandleProvider {
-    config: LocalConfig,
-    state: Arc<RwLock<ModelState>>,
-    load_progress: Arc<AtomicU8>,
-    is_generating: Arc<AtomicBool>,
-    device_type: DeviceType,
-    device: Arc<RwLock<Option<Device>>>,
-    model: Arc<RwLock<Option<ModelWeights>>>,
-    tokenizer: Arc<RwLock<Option<Tokenizer>>>,
-}
-
-impl CandleProvider {
-    pub fn new(config: LocalConfig) -> Self {
-        let device_type = Self::detect_device_type();
-        println!("[CandleProvider] Detected device: {}", device_type);
+impl LocalLlamaProvider {
+    /// Create new local provider
+    pub fn new() -> Self {
+        let device_name = Self::detect_device_name();
+        
+        println!("[LocalLlamaProvider] Created with device: {}", device_name);
         
         Self {
-            config,
-            state: Arc::new(RwLock::new(ModelState::Unloaded)),
-            load_progress: Arc::new(AtomicU8::new(0)),
-            is_generating: Arc::new(AtomicBool::new(false)),
-            device_type,
-            device: Arc::new(RwLock::new(None)),
+            state: Arc::new(RwLock::new(ProviderState::Unloaded)),
             model: Arc::new(RwLock::new(None)),
-            tokenizer: Arc::new(RwLock::new(None)),
+            model_path: Arc::new(RwLock::new(None)),
+            device_name,
         }
     }
-
-    /// Create with default settings
+    
+    /// Alias for new() - for compatibility
     pub fn with_defaults() -> Self {
-        Self::new(LocalConfig::default())
+        Self::new()
     }
-
-    /// Detect the best available device
-    fn detect_device_type() -> DeviceType {
-        // Check for CUDA (NVIDIA GPU)
+    
+    /// Detect best available device name
+    fn detect_device_name() -> String {
         #[cfg(feature = "cuda")]
         {
-            // Set CUDA paths from our binaries directory before checking
-            Self::setup_cuda_paths();
-            
             if candle_core::utils::cuda_is_available() {
-                return DeviceType::Cuda;
+                return "CUDA".to_string();
             }
         }
-
-        // Check for Metal (Apple Silicon)
-        #[cfg(feature = "metal")]
+        
+        #[cfg(all(feature = "metal", target_os = "macos"))]
         {
             if candle_core::utils::metal_is_available() {
-                return DeviceType::Metal;
+                return "Metal".to_string();
             }
         }
-
-        DeviceType::Cpu
-    }
-
-    /// Setup CUDA library paths from bundled binaries
-    #[cfg(feature = "cuda")]
-    fn setup_cuda_paths() {
-        use crate::setup::paths::get_binaries_dir;
         
-        let binaries_dir = get_binaries_dir();
-        if binaries_dir.exists() {
-            // Set CUDA_PATH to our binaries directory
-            std::env::set_var("CUDA_PATH", &binaries_dir);
-            
-            // Also add to LD_LIBRARY_PATH on Linux
-            #[cfg(target_os = "linux")]
-            {
-                let current = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
-                let new_path = format!("{}:{}", binaries_dir.display(), current);
-                std::env::set_var("LD_LIBRARY_PATH", new_path);
-            }
-            
-            println!("[CandleProvider] Set CUDA_PATH to: {}", binaries_dir.display());
-        }
+        "CPU".to_string()
     }
-
-    /// Check if model file exists
-    pub fn model_exists(&self) -> bool {
-        self.config.model_path.exists()
-    }
-
-    /// Get current load progress (0-100)
-    pub fn get_load_progress(&self) -> u8 {
-        self.load_progress.load(Ordering::SeqCst)
-    }
-
-    /// Get current model state
-    pub async fn get_state(&self) -> ModelState {
-        *self.state.read().await
-    }
-
-    /// Create the Candle device
-    fn create_device(&self) -> Result<Device, String> {
-        match self.device_type {
-            #[cfg(feature = "cuda")]
-            DeviceType::Cuda => {
-                Device::new_cuda(0).map_err(|e| format!("CUDA device error: {}", e))
-            }
-            #[cfg(feature = "metal")]
-            DeviceType::Metal => {
-                Device::new_metal(0).map_err(|e| format!("Metal device error: {}", e))
-            }
-            _ => Ok(Device::Cpu),
-        }
-    }
-
-    /// Load the GGUF model
-    pub async fn load_model(&self) -> Result<(), String> {
-        let current_state = *self.state.read().await;
-        if current_state == ModelState::Loaded {
-            return Ok(());
-        }
-        if current_state == ModelState::Loading {
-            return Err("Model is already loading".to_string());
-        }
-
+    
+    /// Get the actual Device enum
+    fn get_device() -> candle_core::Result<Device> {
+        #[cfg(feature = "cuda")]
         {
-            let mut state = self.state.write().await;
-            *state = ModelState::Loading;
+            if candle_core::utils::cuda_is_available() {
+                return Device::new_cuda(0);
+            }
         }
-
-        self.load_progress.store(0, Ordering::SeqCst);
-
-        // Check model file exists
-        if !self.model_exists() {
-            let mut state = self.state.write().await;
-            *state = ModelState::Error;
-            return Err(format!("Model file not found: {:?}", self.config.model_path));
+        
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        {
+            if candle_core::utils::metal_is_available() {
+                return Device::new_metal(0);
+            }
         }
-
-        self.load_progress.store(10, Ordering::SeqCst);
-
-        let model_path = self.config.model_path.clone();
-        let device_type = self.device_type;
-        let progress = self.load_progress.clone();
-
-        // Load model in blocking task
+        
+        Ok(Device::Cpu)
+    }
+    
+    /// Get device name
+    pub fn device_name(&self) -> &str {
+        &self.device_name
+    }
+    
+    /// Check if model is loaded
+    pub async fn is_loaded(&self) -> bool {
+        *self.state.read().await == ProviderState::Ready
+    }
+    
+    /// Load a GGUF model from the specified path
+    pub async fn load_model(&self, model_path: PathBuf) -> Result<(), String> {
+        println!("[LocalLlamaProvider] Loading model from: {:?}", model_path);
+        
+        if !model_path.exists() {
+            return Err(format!("Model file not found: {:?}", model_path));
+        }
+        
+        // Set state to loading
+        *self.state.write().await = ProviderState::Loading;
+        
+        // Store model path
+        *self.model_path.write().await = Some(model_path.clone());
+        
+        // Load in blocking task
+        let model_path_clone = model_path.clone();
         let result = tokio::task::spawn_blocking(move || {
-            println!("[CandleProvider] Loading model from {:?}", model_path);
-
-            // Create device
-            progress.store(20, Ordering::SeqCst);
-            
-            let device = match device_type {
-                #[cfg(feature = "cuda")]
-                DeviceType::Cuda => Device::new_cuda(0).unwrap_or(Device::Cpu),
-                #[cfg(feature = "metal")]
-                DeviceType::Metal => Device::new_metal(0).unwrap_or(Device::Cpu),
-                _ => Device::Cpu,
-            };
-
-            println!("[CandleProvider] Using device: {:?}", device);
-            progress.store(30, Ordering::SeqCst);
-
-            // Load GGUF model
-            let model_content = std::fs::read(&model_path)
-                .map_err(|e| format!("Failed to read model file: {}", e))?;
-
-            progress.store(60, Ordering::SeqCst);
-
-            // Parse GGUF and create model weights
-            let mut file = std::io::Cursor::new(&model_content);
-            let model = ModelWeights::from_gguf(file, &mut file, &device)
-                .map_err(|e| format!("Failed to load GGUF model: {}", e))?;
-
-            progress.store(80, Ordering::SeqCst);
-
-            // Load tokenizer from GGUF or use default
-            let tokenizer = Self::load_tokenizer_from_gguf(&model_content)
-                .unwrap_or_else(|_| Self::create_default_tokenizer());
-
-            progress.store(100, Ordering::SeqCst);
-
-            println!("[CandleProvider] Model loaded successfully!");
-            Ok::<(Device, ModelWeights, Tokenizer), String>((device, model, tokenizer))
+            Self::load_model_sync(model_path_clone)
         })
         .await
         .map_err(|e| format!("Task join error: {}", e))?;
-
+        
         match result {
-            Ok((device, model, tokenizer)) => {
-                let mut dev_lock = self.device.write().await;
-                *dev_lock = Some(device);
-                
-                let mut model_lock = self.model.write().await;
-                *model_lock = Some(model);
-                
-                let mut tok_lock = self.tokenizer.write().await;
-                *tok_lock = Some(tokenizer);
-                
-                let mut state = self.state.write().await;
-                *state = ModelState::Loaded;
-                
+            Ok(loaded) => {
+                *self.model.write().await = Some(loaded);
+                *self.state.write().await = ProviderState::Ready;
+                println!("[LocalLlamaProvider] Model loaded successfully");
                 Ok(())
             }
             Err(e) => {
-                let mut state = self.state.write().await;
-                *state = ModelState::Error;
+                *self.state.write().await = ProviderState::Error;
                 Err(e)
             }
         }
     }
-
-    /// Load tokenizer from GGUF metadata
-    fn load_tokenizer_from_gguf(_data: &[u8]) -> Result<Tokenizer, String> {
-        // GGUF models often embed tokenizer - for now use HuggingFace tokenizer
-        // In production, parse GGUF metadata for tokenizer vocab
-        Err("GGUF tokenizer extraction not implemented".to_string())
+    
+    /// Synchronous model loading
+    fn load_model_sync(model_path: PathBuf) -> Result<LoadedModel, String> {
+        // Get device
+        let device = Self::get_device()
+            .map_err(|e| format!("Failed to get device: {}", e))?;
+        
+        println!("[LocalLlamaProvider] Using device: {:?}", device);
+        
+        // Open and read GGUF file
+        let file = File::open(&model_path)
+            .map_err(|e| format!("Failed to open model file: {}", e))?;
+        let mut reader = BufReader::new(file);
+        
+        // Read GGUF content
+        let content = Content::read(&mut reader)
+            .map_err(|e| format!("Failed to read GGUF content: {}", e))?;
+        
+        println!("[LocalLlamaProvider] GGUF content read successfully");
+        
+        // Load model weights
+        let weights = ModelWeights::from_gguf(content, &mut reader, &device)
+            .map_err(|e| format!("Failed to load model weights: {}", e))?;
+        
+        println!("[LocalLlamaProvider] Model weights loaded");
+        
+        // Load tokenizer - try to find tokenizer.json next to model
+        let tokenizer_path = model_path.parent()
+            .map(|p| p.join("tokenizer.json"))
+            .filter(|p| p.exists());
+        
+        let tokenizer = if let Some(tok_path) = tokenizer_path {
+            println!("[LocalLlamaProvider] Loading tokenizer from: {:?}", tok_path);
+            Tokenizer::from_file(&tok_path)
+                .map_err(|e| format!("Failed to load tokenizer: {}", e))?
+        } else {
+            return Err("No tokenizer.json found next to model file. Please provide a tokenizer.".to_string());
+        };
+        
+        Ok(LoadedModel {
+            weights,
+            tokenizer,
+            device,
+        })
     }
-
-    /// Create a default tokenizer (fallback)
-    fn create_default_tokenizer() -> Tokenizer {
-        // Use a simple BPE tokenizer as fallback
-        // In production, this should be the actual model's tokenizer
-        Tokenizer::from_pretrained("hf-internal-testing/llama-tokenizer", None)
-            .unwrap_or_else(|_| {
-                // Ultimate fallback - create minimal tokenizer
-                let mut tokenizer = tokenizers::Tokenizer::new(
-                    tokenizers::models::bpe::BPE::default()
-                );
-                tokenizer
-            })
+    
+    /// Unload the current model
+    pub async fn unload_model(&self) {
+        println!("[LocalLlamaProvider] Unloading model");
+        *self.model.write().await = None;
+        *self.model_path.write().await = None;
+        *self.state.write().await = ProviderState::Unloaded;
     }
-
-    /// Unload the model from memory
-    pub async fn unload_model(&self) -> Result<(), String> {
-        let current_state = *self.state.read().await;
-        if current_state == ModelState::Unloaded {
-            return Ok(());
-        }
-
-        {
-            let mut state = self.state.write().await;
-            *state = ModelState::Unloading;
-        }
-
-        // Clear model and device
-        {
-            let mut model_lock = self.model.write().await;
-            *model_lock = None;
-        }
-        {
-            let mut dev_lock = self.device.write().await;
-            *dev_lock = None;
-        }
-        {
-            let mut tok_lock = self.tokenizer.write().await;
-            *tok_lock = None;
-        }
-
-        self.load_progress.store(0, Ordering::SeqCst);
-
-        {
-            let mut state = self.state.write().await;
-            *state = ModelState::Unloaded;
-        }
-
-        println!("[CandleProvider] Model unloaded");
-        Ok(())
-    }
-
+    
     /// Format messages for the model
-    fn format_messages(&self, system_prompt: &str, messages: &[Message]) -> String {
-        let mut prompt = system_prompt.to_string();
+    fn format_messages(system_prompt: &str, messages: &[Message], is_turbo: bool) -> String {
+        let base_system = if is_turbo { LOCAL_TURBO_TEMPLATE } else { LOCAL_CHAT_TEMPLATE };
+        let mut formatted = format!("<|im_start|>system\n{}\n{}\n<|im_end|>\n", base_system.trim(), system_prompt);
         
         for msg in messages {
             let role = match msg.role.as_str() {
                 "user" => "user",
-                "model" | "assistant" => "assistant",
+                "assistant" => "assistant",
+                "system" => continue,
                 _ => "user",
             };
-            prompt.push_str(&format!("<|im_start|>{}\n{}\n<|im_end|>\n", role, msg.content));
+            
+            formatted.push_str(&format!(
+                "<|im_start|>{}\n{}\n<|im_end|>\n",
+                role, msg.content
+            ));
         }
         
-        prompt.push_str("<|im_start|>assistant\n");
-        prompt
+        formatted.push_str("<|im_start|>assistant\n");
+        formatted
     }
-
-    /// Generate completion using Candle
-    async fn generate_completion(&self, prompt: &str) -> Result<Vec<String>, String> {
-        let state = *self.state.read().await;
-        if state != ModelState::Loaded {
-            return Err("Model not loaded".to_string());
-        }
-
-        self.is_generating.store(true, Ordering::SeqCst);
-
-        let prompt_owned = prompt.to_string();
-        let max_tokens = self.config.max_tokens;
-        let is_generating = self.is_generating.clone();
-        let model_arc = self.model.clone();
-        let device_arc = self.device.clone();
-        let tokenizer_arc = self.tokenizer.clone();
-
-        let result = tokio::task::spawn_blocking(move || {
-            let model_guard = model_arc.blocking_read();
-            let model = model_guard.as_ref().ok_or("Model not available")?;
+    
+    /// Generate text (blocking)
+    fn generate_sync(
+        model: &mut LoadedModel,
+        prompt: &str,
+        max_tokens: usize,
+        temperature: f32,
+    ) -> Result<String, String> {
+        use candle_core::Tensor;
+        use rand::SeedableRng;
+        
+        // Tokenize input
+        let encoding = model.tokenizer.encode(prompt, true)
+            .map_err(|e| format!("Tokenization failed: {}", e))?;
+        let input_ids = encoding.get_ids();
+        
+        // Create input tensor
+        let mut tokens: Vec<u32> = input_ids.to_vec();
+        let mut generated_text = String::new();
+        
+        // Get special tokens
+        let eos_token_id = model.tokenizer.token_to_id("<|im_end|>")
+            .or_else(|| model.tokenizer.token_to_id("</s>"))
+            .unwrap_or(2);
+        
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        
+        for i in 0..max_tokens {
+            // Create tensor from tokens
+            let context_size = tokens.len().min(2048);
+            let start = tokens.len().saturating_sub(context_size);
+            let context = &tokens[start..];
             
-            let device_guard = device_arc.blocking_read();
-            let device = device_guard.as_ref().ok_or("Device not available")?;
+            let input = Tensor::new(context, &model.device)
+                .map_err(|e| format!("Failed to create tensor: {}", e))?
+                .unsqueeze(0)
+                .map_err(|e| format!("Failed to unsqueeze: {}", e))?;
             
-            let tok_guard = tokenizer_arc.blocking_read();
-            let tokenizer = tok_guard.as_ref().ok_or("Tokenizer not available")?;
-
-            // Tokenize input
-            let encoding = tokenizer.encode(prompt_owned.as_str(), true)
-                .map_err(|e| format!("Tokenization failed: {}", e))?;
+            // Forward pass
+            let logits = model.weights.forward(&input, i)
+                .map_err(|e| format!("Forward pass failed: {}", e))?;
             
-            let tokens: Vec<u32> = encoding.get_ids().to_vec();
-            println!("[CandleProvider] Input tokens: {}", tokens.len());
-
-            // Convert to tensor
-            let input_tensor = Tensor::new(tokens.as_slice(), device)
-                .map_err(|e| format!("Tensor creation failed: {}", e))?;
-
-            let mut generated_tokens = Vec::new();
-            let mut generated_text = Vec::new();
-            let mut current_tokens = input_tensor.clone();
-
-            // Generation loop
-            for _ in 0..max_tokens {
-                if !is_generating.load(Ordering::SeqCst) {
-                    break;
-                }
-
-                // Forward pass
-                let logits = model.forward(&current_tokens, 0)
-                    .map_err(|e| format!("Forward pass failed: {}", e))?;
-
-                // Sample next token (greedy for now)
-                let next_token = logits
-                    .argmax(candle_core::D::Minus1)
+            // Get last token logits
+            let logits = logits.squeeze(0)
+                .map_err(|e| format!("Squeeze failed: {}", e))?;
+            let seq_len = logits.dim(0).map_err(|e| format!("Dim error: {}", e))?;
+            let logits = logits.get(seq_len - 1)
+                .map_err(|e| format!("Get last failed: {}", e))?;
+            
+            // Apply temperature and sample
+            let next_token = if temperature <= 0.0 {
+                // Greedy
+                logits.argmax(0)
                     .map_err(|e| format!("Argmax failed: {}", e))?
                     .to_scalar::<u32>()
-                    .map_err(|e| format!("Scalar conversion failed: {}", e))?;
-
-                // Check for EOS
-                if next_token == 2 || next_token == 0 {
-                    break;
-                }
-
-                generated_tokens.push(next_token);
-
-                // Decode token
-                let text = tokenizer.decode(&[next_token], false)
-                    .unwrap_or_default();
+                    .map_err(|e| format!("To scalar failed: {}", e))?
+            } else {
+                // Sample with temperature
+                let logits = (&logits / temperature as f64)
+                    .map_err(|e| format!("Div failed: {}", e))?;
+                let probs = candle_nn::ops::softmax(&logits, 0)
+                    .map_err(|e| format!("Softmax failed: {}", e))?;
+                let probs_vec: Vec<f32> = probs.to_vec1()
+                    .map_err(|e| format!("To vec failed: {}", e))?;
                 
-                generated_text.push(text.clone());
-
-                // Check for stop sequences
-                let current_text: String = generated_text.iter().cloned().collect();
-                if current_text.contains("<|im_end|>") || current_text.contains("</message>") {
-                    break;
-                }
-
-                // Update current tokens for next iteration
-                current_tokens = Tensor::new(&[next_token], device)
-                    .map_err(|e| format!("Token tensor failed: {}", e))?;
+                // Weighted sampling
+                use rand::distributions::{Distribution, WeightedIndex};
+                let dist = WeightedIndex::new(&probs_vec)
+                    .map_err(|e| format!("WeightedIndex failed: {}", e))?;
+                dist.sample(&mut rng) as u32
+            };
+            
+            // Check for EOS
+            if next_token == eos_token_id {
+                break;
             }
-
-            println!("[CandleProvider] Generated {} tokens", generated_tokens.len());
-            Ok::<Vec<String>, String>(generated_text)
+            
+            tokens.push(next_token);
+            
+            // Decode new token
+            if let Some(text) = model.tokenizer.decode(&[next_token], false).ok() {
+                generated_text.push_str(&text);
+            }
+        }
+        
+        Ok(generated_text)
+    }
+    
+    /// Internal generation method
+    async fn generate(&self, system_prompt: &str, messages: &[Message], is_turbo: bool) -> Result<String, String> {
+        if !self.is_loaded().await {
+            return Err("Model not loaded. Please download the model first.".to_string());
+        }
+        
+        let prompt = Self::format_messages(system_prompt, messages, is_turbo);
+        let model_arc = self.model.clone();
+        
+        tokio::task::spawn_blocking(move || {
+            let mut model_guard = futures::executor::block_on(model_arc.write());
+            if let Some(ref mut loaded) = *model_guard {
+                Self::generate_sync(loaded, &prompt, 2048, 0.7)
+            } else {
+                Err("Model not loaded".to_string())
+            }
         })
         .await
-        .map_err(|e| format!("Task join error: {}", e))?;
+        .map_err(|e| format!("Task join error: {}", e))?
+    }
+}
 
-        self.is_generating.store(false, Ordering::SeqCst);
-        result
+impl Default for LocalLlamaProvider {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 #[async_trait]
-impl ModelProvider for CandleProvider {
+impl ModelProvider for LocalLlamaProvider {
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
             supports_tools: true,
-            supports_streaming: true,
+            supports_streaming: false,
             supports_cascade: false,
             supports_summarization: false,
-            max_context_tokens: self.config.ctx_size as usize,
+            max_context_tokens: 4096,
         }
     }
-
+    
     fn name(&self) -> &str {
-        match self.device_type {
-            DeviceType::Cuda => "Local (Candle/CUDA)",
-            DeviceType::Metal => "Local (Candle/Metal)",
-            DeviceType::Cpu => "Local (Candle/CPU)",
-        }
+        "LocalLlama"
     }
-
+    
     async fn chat(
         &self,
-        _system_prompt: &str,
+        system_prompt: &str,
         messages: &[Message],
     ) -> Result<CompletionResult, String> {
-        // Ensure model is loaded
-        let state = *self.state.read().await;
-        if state != ModelState::Loaded {
-            self.load_model().await?;
-        }
-
-        // Format with chat template
-        let prompt = self.format_messages(LOCAL_CHAT_TEMPLATE, messages);
+        let text = self.generate(system_prompt, messages, false).await?;
         
-        // Generate response
-        let chunks = self.generate_completion(&prompt).await?;
-        
-        // Create stream from chunks
-        let stream_chunks: Vec<Result<String, String>> = chunks.into_iter().map(Ok).collect();
-        let stream = stream::iter(stream_chunks);
-        
-        Ok(CompletionResult::Stream(Box::new(Box::pin(stream))))
+        // Return as single-chunk stream - use Box::pin for Unpin
+        let stream = stream::once(async move { Ok(text) });
+        Ok(CompletionResult::Stream(Box::pin(stream)))
     }
-
+    
     async fn agent(
         &self,
-        _system_prompt: &str,
+        system_prompt: &str,
         messages: &[Message],
     ) -> Result<CompletionResult, String> {
-        // Ensure model is loaded
-        let state = *self.state.read().await;
-        if state != ModelState::Loaded {
-            self.load_model().await?;
-        }
-
-        // Format with turbo template
-        let prompt = self.format_messages(LOCAL_TURBO_TEMPLATE, messages);
+        let text = self.generate(system_prompt, messages, true).await?;
         
-        // Generate response
-        let chunks = self.generate_completion(&prompt).await?;
-        
-        // Create stream from chunks
-        let stream_chunks: Vec<Result<String, String>> = chunks.into_iter().map(Ok).collect();
-        let stream = stream::iter(stream_chunks);
-        
-        Ok(CompletionResult::Stream(Box::new(Box::pin(stream))))
+        // Return as single-chunk stream - use Box::pin for Unpin
+        let stream = stream::once(async move { Ok(text) });
+        Ok(CompletionResult::Stream(Box::pin(stream)))
     }
-
+    
     fn active_model(&self) -> Option<ModelTier> {
         Some(ModelTier::Local)
     }
 }
 
-// Re-export for backwards compatibility
-pub type LocalLlamaProvider = CandleProvider;
-pub type LocalProvider = CandleProvider;
+/// Get default model path for offline mode
+pub fn get_default_model_path() -> PathBuf {
+    get_model_path()
+}
+
+/// Check if a local model is available
+pub fn is_model_available() -> bool {
+    get_default_model_path().exists()
+}

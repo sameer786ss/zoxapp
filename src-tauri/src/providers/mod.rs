@@ -27,7 +27,7 @@ pub struct ProviderCapabilities {
 /// Result of a model completion
 pub enum CompletionResult {
     /// Streaming response - yields chunks
-    Stream(Box<dyn futures::Stream<Item = Result<String, String>> + Send + Unpin>),
+    Stream(std::pin::Pin<Box<dyn futures::Stream<Item = Result<String, String>> + Send>>),
 }
 
 /// Tool definition for providers
@@ -51,6 +51,8 @@ pub enum ModelTier {
     Agent,
     /// 2B - Background summarizer
     Summarizer,
+    /// Local - Offline model
+    Local,
 }
 
 impl ModelTier {
@@ -62,6 +64,7 @@ impl ModelTier {
             ModelTier::Agent => "gemma-3-27b-it",
             // Gemma 3 doesn't have 2B - use 4B for summarization
             ModelTier::Summarizer => "gemma-3-4b-it",
+            ModelTier::Local => "local-gguf",
         }
     }
     
@@ -72,6 +75,7 @@ impl ModelTier {
             ModelTier::AdvancedChat => "12B",
             ModelTier::Agent => "27B",
             ModelTier::Summarizer => "2B",
+            ModelTier::Local => "Local",
         }
     }
 }

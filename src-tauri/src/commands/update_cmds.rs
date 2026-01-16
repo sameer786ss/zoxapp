@@ -6,6 +6,8 @@
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_updater::UpdaterExt;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 /// Update information returned to frontend
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,20 +92,22 @@ pub async fn download_update(app: AppHandle) -> Result<(), String> {
         .ok_or("No update available")?;
     
     let app_clone = app.clone();
-    let mut downloaded: u64 = 0;
+    let downloaded = Arc::new(AtomicU64::new(0));
+    let downloaded_clone = downloaded.clone();
     let start_time = std::time::Instant::now();
     
-    // Download with progress tracking
+    // Download with progress tracking - callbacks return ()
     update.download_and_install(
         move |chunk_len, content_len| {
-            downloaded += chunk_len as u64;
+            let prev = downloaded_clone.fetch_add(chunk_len as u64, Ordering::SeqCst);
+            let current = prev + chunk_len as u64;
             let total = content_len.unwrap_or(0) as u64;
             let elapsed = start_time.elapsed().as_secs_f64();
-            let speed = if elapsed > 0.0 { downloaded as f64 / elapsed } else { 0.0 };
-            let percent = if total > 0 { (downloaded as f64 / total as f64) * 100.0 } else { 0.0 };
+            let speed = if elapsed > 0.0 { current as f64 / elapsed } else { 0.0 };
+            let percent = if total > 0 { (current as f64 / total as f64) * 100.0 } else { 0.0 };
             
             let progress = UpdateProgress {
-                downloaded,
+                downloaded: current,
                 total,
                 percent,
                 speed,
@@ -112,8 +116,8 @@ pub async fn download_update(app: AppHandle) -> Result<(), String> {
             app_clone.emit("update-download-progress", progress).ok();
         },
         || {
-            // Called before restart - we don't auto-restart, user triggers it
-            false
+            // This callback is called before restart - return () not bool
+            // We handle restart separately via install_update
         }
     )
     .await
@@ -144,12 +148,11 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
         .map_err(|e| format!("Update check failed: {}", e))?
         .ok_or("No update available")?;
     
-    // Download and install with restart
+    // Download and install - restart happens automatically after
     update.download_and_install(
         |_, _| {},
         || {
-            // Return true to trigger restart
-            true
+            // Restart callback - just return ()
         }
     )
     .await
@@ -163,8 +166,8 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
         format!("Install failed: {}", e)
     })?;
     
-    // If we reach here, restart was triggered
-    Ok(())
+    // Restart the app - this doesn't return
+    app.restart();
 }
 
 /// Get current app version

@@ -13,14 +13,26 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # macOS Apple Silicon - Metal
           - platform: 'macos-latest'
             args: '--target aarch64-apple-darwin'
+            features: '--features metal'
+            target: 'aarch64-apple-darwin'
+          # macOS Intel - Metal  
           - platform: 'macos-latest'
             args: '--target x86_64-apple-darwin'
+            features: '--features metal'
+            target: 'x86_64-apple-darwin'
+          # Linux - CUDA
           - platform: 'ubuntu-22.04'
             args: ''
+            features: '--features cuda'
+            target: 'x86_64-unknown-linux-gnu'
+          # Windows - CUDA
           - platform: 'windows-latest'
             args: ''
+            features: '--features cuda'
+            target: 'x86_64-pc-windows-msvc'
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -34,7 +46,21 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-action@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.target }}
+
+      # Install CUDA on Linux
+      - name: Install CUDA Toolkit (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        uses: Jimver/cuda-toolkit@v0.2.11
+        with:
+          cuda: '12.2.0'
+          
+      # Install CUDA on Windows
+      - name: Install CUDA Toolkit (Windows)
+        if: matrix.platform == 'windows-latest'
+        uses: Jimver/cuda-toolkit@v0.2.11
+        with:
+          cuda: '12.2.0'
 
       - name: Install dependencies (Ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
@@ -54,10 +80,23 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'ZOX v__VERSION__'
-          releaseBody: 'See the assets to download and install this version.'
+          releaseBody: |
+            ## ZOX - AI Coding Agent
+            
+            ### Features
+            - 🚀 Cloud mode (Gemini API)
+            - 💻 Offline mode (Local GGUF models)
+            - ⚡ CUDA support (NVIDIA GPUs)
+            - 🍎 Metal support (Apple Silicon)
+            
+            ### Installation
+            - **Windows**: Download `.msi` or `.exe` installer
+            - **macOS**: Download `.dmg` for your architecture
+            - **Linux**: Download `.AppImage` or `.deb`
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+          tauriScript: npm run tauri -- build ${{ matrix.features }}
 
   # Generate latest.json for updater
   update-manifest:
@@ -88,27 +127,31 @@ jobs:
 
       - name: Generate latest.json
         run: |
+          VERSION="${{ fromJson(steps.release.outputs.result).version }}"
+          TAG="${{ fromJson(steps.release.outputs.result).tag }}"
+          REPO="${{ github.repository }}"
+          
           cat > latest.json << EOF
           {
-            "version": "${{ fromJson(steps.release.outputs.result).version }}",
-            "notes": "${{ fromJson(steps.release.outputs.result).notes }}",
-            "pub_date": "${{ fromJson(steps.release.outputs.result).pub_date }}",
+            "version": "${VERSION}",
+            "notes": "See release notes on GitHub",
+            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
             "platforms": {
               "darwin-aarch64": {
                 "signature": "",
-                "url": "https://github.com/${{ github.repository }}/releases/download/${{ fromJson(steps.release.outputs.result).tag }}/ZOX_${{ fromJson(steps.release.outputs.result).version }}_aarch64.app.tar.gz"
+                "url": "https://github.com/${REPO}/releases/download/${TAG}/ZOX_${VERSION}_aarch64.app.tar.gz"
               },
               "darwin-x86_64": {
                 "signature": "",
-                "url": "https://github.com/${{ github.repository }}/releases/download/${{ fromJson(steps.release.outputs.result).tag }}/ZOX_${{ fromJson(steps.release.outputs.result).version }}_x64.app.tar.gz"
+                "url": "https://github.com/${REPO}/releases/download/${TAG}/ZOX_${VERSION}_x64.app.tar.gz"
               },
               "linux-x86_64": {
                 "signature": "",
-                "url": "https://github.com/${{ github.repository }}/releases/download/${{ fromJson(steps.release.outputs.result).tag }}/ZOX_${{ fromJson(steps.release.outputs.result).version }}_amd64.AppImage.tar.gz"
+                "url": "https://github.com/${REPO}/releases/download/${TAG}/ZOX_${VERSION}_amd64.AppImage.tar.gz"
               },
               "windows-x86_64": {
                 "signature": "",
-                "url": "https://github.com/${{ github.repository }}/releases/download/${{ fromJson(steps.release.outputs.result).tag }}/ZOX_${{ fromJson(steps.release.outputs.result).version }}_x64-setup.nsis.zip"
+                "url": "https://github.com/${REPO}/releases/download/${TAG}/ZOX_${VERSION}_x64-setup.nsis.zip"
               }
             }
           }

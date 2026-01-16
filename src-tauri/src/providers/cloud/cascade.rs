@@ -50,7 +50,7 @@ impl CascadeExecutor {
         match primary.stream_completion(system_prompt, messages, false).await {
             Ok(stream) => {
                 println!("[Cascade] {} succeeded", primary.tier().display_name());
-                Ok(CompletionResult::Stream(Box::new(stream)))
+                Ok(CompletionResult::Stream(Box::pin(stream)))
             }
             Err(e) if e == "RATE_LIMIT" => {
                 // Failover to 12B
@@ -59,7 +59,7 @@ impl CascadeExecutor {
                 match self.client_12b.stream_completion(system_prompt, messages, false).await {
                     Ok(stream) => {
                         println!("[Cascade] 12B fallback succeeded");
-                        Ok(CompletionResult::Stream(Box::new(stream)))
+                        Ok(CompletionResult::Stream(Box::pin(stream)))
                     }
                     Err(e) => Err(format!("All models failed: {}", e))
                 }
@@ -80,7 +80,7 @@ impl CascadeExecutor {
         match self.client_27b.stream_completion(system_prompt, messages, true).await {
             Ok(stream) => {
                 println!("[Cascade] 27B succeeded");
-                Ok(CompletionResult::Stream(Box::new(stream)))
+                Ok(CompletionResult::Stream(Box::pin(stream)))
             }
             Err(e) if e == "RATE_LIMIT" => {
                 // Failover to 12B with agent prompt
@@ -89,7 +89,7 @@ impl CascadeExecutor {
                 match self.client_12b.stream_completion(system_prompt, messages, true).await {
                     Ok(stream) => {
                         println!("[Cascade] 12B fallback succeeded");
-                        Ok(CompletionResult::Stream(Box::new(stream)))
+                        Ok(CompletionResult::Stream(Box::pin(stream)))
                     }
                     Err(e) => Err(format!("All agent models failed: {}", e))
                 }
