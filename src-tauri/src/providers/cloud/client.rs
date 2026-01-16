@@ -28,9 +28,17 @@ impl KeyManager {
         }
     }
 
-    pub fn get_current_key(&self) -> String {
+    pub fn get_current_key(&self) -> Option<String> {
+        if self.keys.is_empty() {
+            eprintln!("[KeyManager] ERROR: No API keys available!");
+            return None;
+        }
         let idx = *self.current_index.lock();
-        self.keys.get(idx).cloned().unwrap_or_default()
+        self.keys.get(idx).cloned()
+    }
+    
+    pub fn has_keys(&self) -> bool {
+        !self.keys.is_empty()
     }
 
     pub fn rotate(&self) {
@@ -110,12 +118,15 @@ impl GemmaClient {
         messages: &[Message],
         is_turbo: bool,
     ) -> Result<impl futures::Stream<Item = Result<String, String>>, String> {
+        // Check if we have API keys first
+        let key = self.key_manager.get_current_key()
+            .ok_or_else(|| "No API keys configured. Please set GEMINI_API_KEYS environment variable.".to_string())?;
+        
         let model_name = self.model_tier.model_name();
         let url = format!(
             "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?alt=sse",
             model_name
         );
-        let key = self.key_manager.get_current_key();
         let url_with_key = format!("{}&key={}", url, key);
 
         // Build contents array - EXACT same structure as original
@@ -244,7 +255,8 @@ impl GemmaClient {
             "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
             model_name
         );
-        let key = self.key_manager.get_current_key();
+        let key = self.key_manager.get_current_key()
+            .ok_or_else(|| "No API keys configured".to_string())?;
         let url_with_key = format!("{}?key={}", url, key);
         
         // Minimal request - no system prompt, low tokens
@@ -303,7 +315,8 @@ impl GemmaClient {
             "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
             model_name
         );
-        let key = self.key_manager.get_current_key();
+        let key = self.key_manager.get_current_key()
+            .ok_or_else(|| "No API keys configured".to_string())?;
         let url_with_key = format!("{}?key={}", url, key);
         
         // Minimal config for small model

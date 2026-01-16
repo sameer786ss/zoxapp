@@ -244,72 +244,40 @@ pub async fn set_connection_mode(
                 return Err("Setup not complete. Please download binaries and model first.".to_string());
             }
 
-            // Emit loading start
-            app.emit("model-load-progress", 0).ok();
+            // Emit initial progress - actor.rs will emit real progress during load
+            app.emit("model-load-progress", 5).ok();
 
             // Send command to agent to switch provider
+            // The agent will await the actual model load and emit real progress events
             let tx = state.agent_tx.lock().await;
             tx.send(AgentCommand::SetConnectionMode { is_offline: true })
                 .await
                 .map_err(|e| format!("Failed to send mode switch: {}", e))?;
 
-            // Update state
+            // Update local state
             {
                 let mut conn_mode = state.connection_mode.write();
                 *conn_mode = crate::state::app_state::ConnectionMode::Offline;
             }
 
-            // Model loading progress simulation
-            // Phase 1: Backend initialization (0-20%)
-            app.emit("model-load-progress", 5).ok();
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            app.emit("model-load-progress", 15).ok();
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            app.emit("model-load-progress", 20).ok();
-            
-            // Phase 2: Model file loading (20-80%) - this is the slow part
-            for i in (25..=80).step_by(5) {
-                tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-                app.emit("model-load-progress", i).ok();
-            }
-            
-            // Phase 3: Context creation (80-100%)
-            app.emit("model-load-progress", 85).ok();
-            tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
-            app.emit("model-load-progress", 95).ok();
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            app.emit("model-load-progress", 100).ok();
-
-            app.emit("model-load-complete", "loaded").ok();
+            // Final events - model-load-complete will be emitted by actor.rs when done
             app.emit("connection-mode-changed", "offline").ok();
         }
         "cloud" => {
-            // Emit unloading start
-            app.emit("model-load-progress", 100).ok();
-
             // Send command to agent to switch provider
             let tx = state.agent_tx.lock().await;
             tx.send(AgentCommand::SetConnectionMode { is_offline: false })
                 .await
                 .map_err(|e| format!("Failed to send mode switch: {}", e))?;
 
-            // Update state
+            // Update local state
             {
                 let mut conn_mode = state.connection_mode.write();
                 *conn_mode = crate::state::app_state::ConnectionMode::Cloud;
             }
 
-            // Emit unloading progress - model memory release
-            app.emit("model-load-progress", 90).ok();
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            app.emit("model-load-progress", 70).ok();
-            tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
-            app.emit("model-load-progress", 40).ok();
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            app.emit("model-load-progress", 10).ok();
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            // Emit completion immediately - cloud doesn't need loading
             app.emit("model-load-progress", 0).ok();
-
             app.emit("model-load-complete", "unloaded").ok();
             app.emit("connection-mode-changed", "cloud").ok();
         }

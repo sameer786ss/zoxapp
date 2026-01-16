@@ -6,11 +6,74 @@
   <link rel="icon" type="image/png" href="/zox-logo.png" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ZOX</title>
+  <style>
+    /* Inline splash to prevent blank flash before React hydrates */
+    #html-splash {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: #0a0a0a;
+      transition: opacity 0.3s ease-out;
+    }
+
+    #html-splash.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    #html-splash img {
+      width: 96px;
+      height: 96px;
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    #html-splash p {
+      margin-top: 1rem;
+      color: #666;
+      font-family: system-ui, sans-serif;
+      font-size: 0.875rem;
+    }
+
+    @keyframes pulse {
+
+      0%,
+      100% {
+        opacity: 0.8;
+        transform: scale(1);
+      }
+
+      50% {
+        opacity: 1;
+        transform: scale(1.05);
+      }
+    }
+  </style>
 </head>
 
 <body>
+  <!-- Pre-splash shown instantly before React loads -->
+  <div id="html-splash">
+    <img src="/zox-logo.png" alt="ZOX" />
+    <p>Loading...</p>
+  </div>
+
   <div id="root"></div>
   <script type="module" src="/src/main.tsx"></script>
+
+  <script>
+    // Hide HTML splash when React app mounts
+    window.addEventListener('zox-ready', function () {
+      var splash = document.getElementById('html-splash');
+      if (splash) {
+        splash.classList.add('hidden');
+        setTimeout(function () { splash.remove(); }, 300);
+      }
+    });
+  </script>
 </body>
 
 </html>

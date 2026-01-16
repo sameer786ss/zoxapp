@@ -1,5 +1,6 @@
 import { motion } from 'framer-motion';
 import { useState, useEffect } from 'react';
+import { listen } from '@tauri-apps/api/event';
 
 interface SplashScreenProps {
     onReady?: () => void;
@@ -10,28 +11,60 @@ export default function SplashScreen({ onReady }: SplashScreenProps) {
     const [progress, setProgress] = useState(0);
 
     useEffect(() => {
-        // Simulate initialization phases
-        const phases = [
-            { text: 'Loading components...', progress: 20 },
-            { text: 'Connecting to backend...', progress: 50 },
-            { text: 'Preparing workspace...', progress: 80 },
-            { text: 'Ready!', progress: 100 },
-        ];
+        let mounted = true;
 
-        let currentPhase = 0;
-        const interval = setInterval(() => {
-            if (currentPhase < phases.length) {
-                setStatusText(phases[currentPhase].text);
-                setProgress(phases[currentPhase].progress);
-                currentPhase++;
-            } else {
-                clearInterval(interval);
-                // Give a moment for the final animation
-                setTimeout(() => onReady?.(), 300);
+        // Listen for real backend initialization events
+        const setupListeners = async () => {
+            try {
+                // Listen for app initialization progress from backend
+                const unlistenInit = await listen<{ stage: string; progress: number }>('app-init-progress', (event) => {
+                    if (!mounted) return;
+                    setStatusText(event.payload.stage);
+                    setProgress(event.payload.progress);
+                });
+
+                // Listen for app ready signal
+                const unlistenReady = await listen('app-init-complete', () => {
+                    if (!mounted) return;
+                    setStatusText('Ready!');
+                    setProgress(100);
+                    setTimeout(() => onReady?.(), 200);
+                });
+
+                // Fallback: If no events received within 2s, proceed anyway
+                // This handles the case where backend doesn't emit events
+                const fallbackTimer = setTimeout(() => {
+                    if (mounted && progress < 100) {
+                        console.log('[SplashScreen] Fallback: No events received, proceeding...');
+                        setStatusText('Ready!');
+                        setProgress(100);
+                        setTimeout(() => onReady?.(), 200);
+                    }
+                }, 2000);
+
+                return () => {
+                    unlistenInit();
+                    unlistenReady();
+                    clearTimeout(fallbackTimer);
+                };
+            } catch (e) {
+                // If Tauri events fail (e.g., in browser dev), use simple timer fallback
+                console.log('[SplashScreen] Tauri events not available, using fallback');
+                setTimeout(() => {
+                    if (mounted) {
+                        setStatusText('Ready!');
+                        setProgress(100);
+                        setTimeout(() => onReady?.(), 200);
+                    }
+                }, 1000);
             }
-        }, 400);
+        };
 
-        return () => clearInterval(interval);
+        setupListeners();
+
+        return () => {
+            mounted = false;
+        };
     }, [onReady]);
 
     return (

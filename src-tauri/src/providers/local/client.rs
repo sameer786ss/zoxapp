@@ -78,6 +78,8 @@ pub struct LocalLlamaProvider {
     model_path: Arc<RwLock<Option<PathBuf>>>,
     device_name: String,
     app_handle: Option<AppHandle>,
+    /// Semaphore to prevent concurrent loads (1 permit = only one load at a time)
+    load_lock: Arc<tokio::sync::Semaphore>,
 }
 
 impl LocalLlamaProvider {
@@ -93,6 +95,7 @@ impl LocalLlamaProvider {
             model_path: Arc::new(RwLock::new(None)),
             device_name,
             app_handle,
+            load_lock: Arc::new(tokio::sync::Semaphore::new(1)),
         }
     }
     
@@ -158,6 +161,10 @@ impl LocalLlamaProvider {
     
     /// Load a GGUF model from the specified path
     pub async fn load_model(&self, model_path: PathBuf) -> Result<(), String> {
+        // Acquire load lock to prevent concurrent loads
+        let _permit = self.load_lock.acquire().await
+            .map_err(|_| "Load lock acquisition failed".to_string())?;
+        
         println!("[LocalLlamaProvider] Loading model from: {:?}", model_path);
         
         // Logic check - if already loaded with same path, skip
@@ -240,11 +247,19 @@ impl LocalLlamaProvider {
             .map_err(|e| format!("Failed to open model file: {}", e))?;
         let mut reader = BufReader::new(file);
         
+        if let Some(app) = &app_handle {
+            app.emit("model-load-progress", 30).ok();
+        }
+        
         // Read GGUF content
         let content = Content::read(&mut reader)
             .map_err(|e| format!("Failed to read GGUF content: {}", e))?;
         
         println!("[LocalLlamaProvider] GGUF content read successfully");
+        
+        if let Some(app) = &app_handle {
+            app.emit("model-load-progress", 50).ok();
+        }
         
         // Load model weights
         let weights = ModelWeights::from_gguf(content, &mut reader, &device)
@@ -252,10 +267,18 @@ impl LocalLlamaProvider {
         
         println!("[LocalLlamaProvider] Model weights loaded");
         
+        if let Some(app) = &app_handle {
+            app.emit("model-load-progress", 70).ok();
+        }
+        
         // Load tokenizer - try to find tokenizer.json next to model
         let tokenizer_path = model_path.parent()
             .map(|p| p.join("tokenizer.json"))
             .filter(|p| p.exists());
+        
+        if let Some(app) = &app_handle {
+            app.emit("model-load-progress", 80).ok();
+        }
         
         let tokenizer = if let Some(tok_path) = tokenizer_path {
             println!("[LocalLlamaProvider] Loading tokenizer from: {:?}", tok_path);
@@ -264,6 +287,10 @@ impl LocalLlamaProvider {
         } else {
             return Err("No tokenizer.json found next to model file. Please provide a tokenizer.".to_string());
         };
+        
+        if let Some(app) = &app_handle {
+            app.emit("model-load-progress", 95).ok();
+        }
         
         Ok(LoadedModel {
             weights,

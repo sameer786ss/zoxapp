@@ -263,9 +263,12 @@ impl ResponseParser {
 }
 
 /// Streaming parser for incremental processing
+/// Supports both chat mode (text/message) and turbo mode (tool calls)
 pub struct StreamingParser {
     buffer: String,
     emitted_text: usize,
+    is_turbo_mode: bool,
+    tool_detected: bool,
 }
 
 /// Events emitted during streaming
@@ -274,13 +277,7 @@ pub enum StreamEvent {
     /// Text content (safe to display)
     Text(String),
     
-    /// Tool call detected (partial - might still be streaming)
-    ToolCallStart {
-        thinking: Option<String>,
-        tool: String,
-    },
-    
-    /// Tool call complete with parameters
+    /// Tool call complete with parameters (only emitted when fully parsed)
     ToolCallComplete {
         thinking: Option<String>,
         tool: String,
@@ -293,20 +290,62 @@ impl StreamingParser {
         Self {
             buffer: String::new(),
             emitted_text: 0,
+            is_turbo_mode: false,
+            tool_detected: false,
         }
     }
     
+    /// Create parser in turbo mode (expects tool calls)
+    pub fn new_turbo() -> Self {
+        Self {
+            buffer: String::new(),
+            emitted_text: 0,
+            is_turbo_mode: true,
+            tool_detected: false,
+        }
+    }
+    
+    /// Set the parsing mode
+    pub fn set_turbo_mode(&mut self, turbo: bool) {
+        self.is_turbo_mode = turbo;
+    }
+    
     /// Feed a chunk of streamed text and get events
+    /// 
+    /// Chat mode: Emits text incrementally, strips <message> tags
+    /// Turbo mode: Waits for complete <tool>...</tool> before emitting
     pub fn feed(&mut self, chunk: &str) -> Vec<StreamEvent> {
         self.buffer.push_str(chunk);
         let mut events = Vec::new();
         
+        // Clean buffer for analysis
         let cleaned = ResponseParser::clean_response(&self.buffer);
         
-        // Check if we have a complete tool call
-        if cleaned.contains("<tool>") && cleaned.contains("</tool>") {
-            if let Some((before, thinking, tool, params)) = Self::try_parse_complete_xml(&cleaned) {
-                // Emit any text before the XML
+        if self.is_turbo_mode {
+            // TURBO MODE: Look for complete tool calls only
+            self.process_turbo_mode(&cleaned, &mut events);
+        } else {
+            // CHAT MODE: Emit text incrementally
+            self.process_chat_mode(&cleaned, &mut events);
+        }
+        
+        events
+    }
+    
+    /// Process in turbo mode - wait for complete tool tags
+    fn process_turbo_mode(&mut self, cleaned: &str, events: &mut Vec<StreamEvent>) {
+        // Check if we have BOTH <tool> and </tool>
+        let has_tool_start = cleaned.contains("<tool>");
+        let has_tool_end = cleaned.contains("</tool>");
+        
+        if has_tool_start {
+            self.tool_detected = true;
+        }
+        
+        if has_tool_start && has_tool_end {
+            // Complete tool call - parse and emit
+            if let Some((before, thinking, tool, params)) = ResponseParser::find_tool_xml(cleaned) {
+                // Emit any text before the tool call
                 if !before.trim().is_empty() && self.emitted_text == 0 {
                     events.push(StreamEvent::Text(before.trim().to_string()));
                 }
@@ -316,37 +355,63 @@ impl StreamingParser {
                     tool,
                     parameters: params,
                 });
+                
+                // Mark as fully emitted
+                self.emitted_text = cleaned.len();
             }
-        } else if cleaned.contains("<tool>") {
-            // Partial tool call - extract tool name if available
-            if let Some(tool_name) = Self::extract_partial_tool_name(&cleaned) {
-                // Find where XML starts
-                if let Some(xml_start) = cleaned.find('<') {
-                    // Emit text before XML
-                    let before = &cleaned[..xml_start];
-                    if !before.trim().is_empty() && self.emitted_text == 0 {
-                        events.push(StreamEvent::Text(before.trim().to_string()));
-                        self.emitted_text = xml_start;
-                    }
-                    
-                    let thinking = ResponseParser::extract_tag_content(&cleaned, "thinking");
-                    
-                    events.push(StreamEvent::ToolCallStart {
-                        thinking,
-                        tool: tool_name,
-                    });
-                }
-            }
-        } else if !cleaned.contains('<') {
-            // No XML detected - safe to emit text
+        } else if !self.tool_detected && !cleaned.contains('<') {
+            // No tool detected yet and no XML starting - safe to emit text
             let new_text = &cleaned[self.emitted_text..];
             if !new_text.is_empty() {
                 events.push(StreamEvent::Text(new_text.to_string()));
                 self.emitted_text = cleaned.len();
             }
         }
-        
-        events
+        // If we see '<' but not complete tags, wait for more data
+    }
+    
+    /// Process in chat mode - emit text incrementally
+    fn process_chat_mode(&mut self, cleaned: &str, events: &mut Vec<StreamEvent>) {
+        // Check for <message> tags
+        if cleaned.contains("<message>") && cleaned.contains("</message>") {
+            // Extract message content
+            if let Some(content) = ResponseParser::extract_tag_content(cleaned, "message") {
+                let new_portion = if self.emitted_text < content.len() {
+                    &content[self.emitted_text..]
+                } else {
+                    ""
+                };
+                
+                if !new_portion.is_empty() {
+                    events.push(StreamEvent::Text(new_portion.to_string()));
+                    self.emitted_text = content.len();
+                }
+            }
+        } else if cleaned.contains("<message>") {
+            // Partial <message> - wait for closing tag
+            // Don't emit anything yet
+        } else if !cleaned.contains('<') {
+            // No XML at all - emit plain text
+            let new_text = &cleaned[self.emitted_text..];
+            if !new_text.is_empty() {
+                events.push(StreamEvent::Text(new_text.to_string()));
+                self.emitted_text = cleaned.len();
+            }
+        } else {
+            // Some XML starting but not <message> - might be thinking or other
+            // For chat mode, strip thinking and emit remaining text
+            let stripped = ResponseParser::strip_remaining_tags(cleaned);
+            let new_text = if self.emitted_text < stripped.len() {
+                &stripped[self.emitted_text..]
+            } else {
+                ""
+            };
+            
+            if !new_text.is_empty() {
+                events.push(StreamEvent::Text(new_text.to_string()));
+                self.emitted_text = stripped.len();
+            }
+        }
     }
     
     /// Get the final parsed result
@@ -358,6 +423,7 @@ impl StreamingParser {
     pub fn reset(&mut self) {
         self.buffer.clear();
         self.emitted_text = 0;
+        self.tool_detected = false;
     }
     
     /// Get the current buffer content
@@ -367,23 +433,6 @@ impl StreamingParser {
     
     fn try_parse_complete_xml(response: &str) -> Option<(String, Option<String>, String, Value)> {
         ResponseParser::find_tool_xml(response)
-    }
-    
-    fn extract_partial_tool_name(response: &str) -> Option<String> {
-        let start = response.find("<tool>")?;
-        let rest = &response[start + 6..];
-        
-        // Look for closing tag or end
-        let end = rest.find("</tool>")
-            .or_else(|| rest.find('<'))
-            .unwrap_or(rest.len());
-        
-        let name = rest[..end].trim();
-        if name.is_empty() {
-            None
-        } else {
-            Some(name.to_string())
-        }
     }
 }
 

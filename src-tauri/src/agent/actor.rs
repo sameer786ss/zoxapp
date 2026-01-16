@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use parking_lot::RwLock;
 
-use crate::agent::parser::{StreamingParser, StreamEvent, ParsedResponse, ResponseParser};
+use crate::agent::parser::{StreamingParser, StreamEvent, ParsedResponse};
 use crate::agent::memory::{ContextWindow, Message};
 use crate::agent::tools::{get_all_tools, get_tool_by_name};
 use crate::agent::workspace::WorkspaceManager;
@@ -361,37 +361,51 @@ impl AgentActor {
                     
                     if is_offline {
                         // Switch to local provider
-                        // Use explicit type to ensure we can clone before boxing
                         let local_provider = LocalLlamaProvider::with_handle(self.app_handle.clone());
                         
-                        // Auto-load trigger: Load immediately in background if model exists
+                        // AWAIT the model load to prevent race conditions
                         if crate::providers::local::is_model_available() {
-                            let provider_clone = local_provider.clone();
                             let path = crate::providers::local::get_default_model_path();
-                            let app = self.app_handle.clone();
                             
                             self.emit_status("Loading local model...").await;
+                            self.app_handle.emit("model-load-progress", 10).ok();
                             
-                            tokio::spawn(async move {
-                                if let Err(e) = provider_clone.load_model(path).await {
-                                    eprintln!("[AgentActor] Background load failed: {}", e);
-                                    app.emit("agent-status", format!("Load failed: {}", e)).ok();
-                                } else {
-                                    app.emit("agent-status", "Local model ready").ok();
+                            // Block until loaded - user cannot send messages until ready
+                            match local_provider.load_model(path).await {
+                                Ok(_) => {
+                                    self.app_handle.emit("model-load-progress", 100).ok();
+                                    self.app_handle.emit("model-load-complete", "loaded").ok();
+                                    self.app_handle.emit("agent-status", "Local model ready").ok();
+                                    println!("[AgentActor] Local model loaded successfully");
                                 }
-                            });
+                                Err(e) => {
+                                    eprintln!("[AgentActor] Model load failed: {}", e);
+                                    self.app_handle.emit("model-load-progress", 0).ok();
+                                    self.app_handle.emit("model-load-complete", "error").ok();
+                                    self.app_handle.emit("agent-status", format!("Load failed: {}", e)).ok();
+                                    self.app_handle.emit("agent-error", format!("Model load failed: {}", e)).ok();
+                                }
+                            }
+                        } else {
+                            self.emit_status("No model found. Download required.").await;
                         }
                         
                         self.provider = Box::new(local_provider);
                         println!("[AgentActor] Switched to LOCAL provider");
-                        // Status emitted above or fallback below
-                        if !crate::providers::local::is_model_available() {
-                             self.emit_status("Switched to offline mode").await;
-                        }
                     } else {
-                        // Switch to cloud provider
-                        self.provider = Box::new(CloudProvider::new(self.api_keys.clone()));
-                        println!("[AgentActor] Switched to CLOUD provider");
+                        // Switch to cloud provider - validate API keys
+                        if self.api_keys.is_empty() {
+                            eprintln!("[AgentActor] WARNING: No API keys configured for cloud mode!");
+                            self.emit_status("No API keys configured!").await;
+                        } else {
+                            println!("[AgentActor] Creating CloudProvider with {} API keys", self.api_keys.len());
+                        }
+                        
+                        // Create fresh cloud provider
+                        let cloud_provider = CloudProvider::new(self.api_keys.clone());
+                        self.provider = Box::new(cloud_provider);
+                        
+                        println!("[AgentActor] Switched to CLOUD provider ({})", self.provider.name());
                         self.emit_status("Switched to cloud mode").await;
                     }
                 }
@@ -507,6 +521,10 @@ impl AgentActor {
     /// Execute the ReAct loop (Turbo Mode) - PRESERVED logic
     async fn execute_react_loop(&mut self, initial_prompt: String) {
         let mut current_step = 0;
+        
+        // Set parser to turbo mode for tool call detection
+        self.streaming_parser.set_turbo_mode(true);
+        self.streaming_parser.reset();
 
         self.emit_status("Thinking...").await;
         
@@ -555,16 +573,15 @@ impl AgentActor {
                                 let events = self.streaming_parser.feed(&token);
                                 for event in events {
                                     match event {
-                                        StreamEvent::ToolCallStart { .. } => {
-                                            self.emit_status("Tool detected...").await
-                                        }
                                         StreamEvent::Text(text) => {
                                             // Append safe text and emit the full accumulated message
                                             // The frontend REPLACES the content, so we send the full text
                                             safe_display_text.push_str(&text);
                                             self.app_handle.emit("agent-stream-chunk", &safe_display_text).ok();
                                         }
-                                        _ => {}
+                                        StreamEvent::ToolCallComplete { tool, .. } => {
+                                            self.emit_status(&format!("Executing {}...", tool)).await;
+                                        }
                                     }
                                 }
                                 
@@ -766,6 +783,10 @@ impl AgentActor {
 
     /// Execute Chat Mode (No Tools) - Accumulate in Rust, emit complete only
     async fn execute_chat_mode(&mut self, initial_prompt: String) {
+        // Set parser to chat mode for text streaming
+        self.streaming_parser.set_turbo_mode(false);
+        self.streaming_parser.reset();
+        
         self.emit_status("Thinking...").await;
         
         // Emit active model info

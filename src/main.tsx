@@ -8,3 +8,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <App />
   </React.StrictMode>,
 );
+
+// Signal to HTML pre-splash that React is ready
+window.dispatchEvent(new CustomEvent('zox-ready'));
+
