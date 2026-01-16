@@ -5,4 +5,4 @@
 
 mod client;
 
-pub use client::LocalLlamaProvider;
+pub use client::{LocalLlamaProvider, is_model_available, get_default_model_path};

@@ -74,11 +74,9 @@ export default function VirtualizedMessageList({ messages }: VirtualizedMessageL
 
         const contentChanged = lastContent.length !== prevLastContentRef.current.length;
 
-        // Only auto-scroll if we are already at the bottom (sticky scroll)
-        // OR if this is the very start of a new message
-        const shouldAutoScroll = isAtBottom || (isStreaming && contentChanged && isAtBottom);
-
-        if (isStreaming && contentChanged && shouldAutoScroll) {
+        // Force auto-scroll during streaming to keep view at bottom
+        // User requested strict auto-scroll that ignores manual scrolling during generation
+        if (isStreaming && contentChanged) {
             // Use rAF to ensure DOM has updated with new content height
             requestAnimationFrame(() => {
                 scrollToBottom(true);
@@ -86,7 +84,7 @@ export default function VirtualizedMessageList({ messages }: VirtualizedMessageL
         }
 
         prevLastContentRef.current = lastContent;
-    }, [messages, isStreaming, scrollToBottom, isAtBottom]);
+    }, [messages, isStreaming, scrollToBottom]); // Removed isAtBottom dependency as we ignore it during streaming
 
     // Initial scroll to bottom
     useEffect(() => {

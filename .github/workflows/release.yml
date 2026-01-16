@@ -107,51 +107,64 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Get release info
-        id: release
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const tag = context.ref.replace('refs/tags/', '');
-            const release = await github.rest.repos.getReleaseByTag({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tag: tag
-            });
-            return {
-              version: tag.replace('v', ''),
-              notes: release.data.body || '',
-              pub_date: release.data.published_at,
-              tag: tag
-            };
+      - name: Download signatures
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download ${{ github.ref_name }} --pattern "*.sig" --repo ${{ github.repository }}
 
       - name: Generate latest.json
+        id: manifest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${{ fromJson(steps.release.outputs.result).version }}"
-          TAG="${{ fromJson(steps.release.outputs.result).tag }}"
-          REPO="${{ github.repository }}"
+          # Get release info
+          API_URL="https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ github.ref_name }}"
+          RELEASE_DATA=$(curl -H "Authorization: token $GITHUB_TOKEN" -s $API_URL)
           
-          cat > latest.json << EOF
+          VERSION="${{ github.ref_name }}"
+          VERSION=${VERSION#v}
+          NOTES=$(echo "$RELEASE_DATA" | jq -r '.body')
+          PUB_DATE=$(echo "$RELEASE_DATA" | jq -r '.published_at')
+          
+          # Read signatures
+          # Note: Filenames depend on your tauri.conf.json product name and version
+          # Ensure these match what tauri-action uploads
+          
+          # MacOS Apple Silicon
+          SIG_DARWIN_AARCH64=$(cat "ZOX_${VERSION}_aarch64.app.tar.gz.sig" || echo "")
+          
+          # MacOS Intel
+          SIG_DARWIN_X64=$(cat "ZOX_${VERSION}_x64.app.tar.gz.sig" || echo "")
+          
+          # Linux
+          SIG_LINUX=$(cat "ZOX_${VERSION}_amd64.AppImage.tar.gz.sig" || echo "")
+          
+          # Windows
+          SIG_WINDOWS=$(cat "ZOX_${VERSION}_x64-setup.nsis.zip.sig" || echo "")
+          
+          # Generate JSON
+          cat > latest.json <<EOF
           {
             "version": "${VERSION}",
             "notes": "See release notes on GitHub",
-            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "pub_date": "${PUB_DATE}",
             "platforms": {
               "darwin-aarch64": {
-                "signature": "",
-                "url": "https://github.com/${REPO}/releases/download/${TAG}/ZOX_${VERSION}_aarch64.app.tar.gz"
+                "signature": "${SIG_DARWIN_AARCH64}",
+                "url": "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/ZOX_${VERSION}_aarch64.app.tar.gz"
               },
               "darwin-x86_64": {
-                "signature": "",
-                "url": "https://github.com/${REPO}/releases/download/${TAG}/ZOX_${VERSION}_x64.app.tar.gz"
+                "signature": "${SIG_DARWIN_X64}",
+                "url": "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/ZOX_${VERSION}_x64.app.tar.gz"
               },
               "linux-x86_64": {
-                "signature": "",
-                "url": "https://github.com/${REPO}/releases/download/${TAG}/ZOX_${VERSION}_amd64.AppImage.tar.gz"
+                "signature": "${SIG_LINUX}",
+                "url": "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/ZOX_${VERSION}_amd64.AppImage.tar.gz"
               },
               "windows-x86_64": {
-                "signature": "",
-                "url": "https://github.com/${REPO}/releases/download/${TAG}/ZOX_${VERSION}_x64-setup.nsis.zip"
+                "signature": "${SIG_WINDOWS}",
+                "url": "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/ZOX_${VERSION}_x64-setup.nsis.zip"
               }
             }
           }

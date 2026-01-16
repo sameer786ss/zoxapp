@@ -375,5 +375,5 @@ pub fn get_binaries_url(gpu_type: &str) -> &'static str {
 
 /// Get the model download URL
 pub fn get_model_url() -> &'static str {
-    "https://huggingface.co/bartowski/Qwen2.5-Coder-3B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf?download=true"
+    "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf?download=true"
 }

@@ -8,7 +8,7 @@ mod providers;
 mod setup;
 mod state;
 
-use tauri::{Manager, Emitter};
+use tauri::{Manager, Emitter, Listener};
 use state::app_state::{AppState, ApprovalState, ConnectionMode};
 use std::sync::Arc;
 use parking_lot::RwLock;
@@ -69,7 +69,7 @@ fn main() {
             // 6. Setup listener for frontend ready signal
             // The frontend will emit 'frontend_loaded' when it's mounted and ready
             let handle_clone = app.handle().clone();
-            app.listen_any("frontend_loaded", move |_| {
+            app.listen("frontend_loaded", move |_| {
                  println!("[Main] Frontend loaded, performing startup checks...");
                  // Small delay to allow UI to settle
                  std::thread::sleep(std::time::Duration::from_millis(100));

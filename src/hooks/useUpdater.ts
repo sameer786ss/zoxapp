@@ -58,6 +58,7 @@ export function useUpdater(): UseUpdaterReturn {
     const unlistenProgressRef = useRef<UnlistenFn | null>(null);
     const unlistenErrorRef = useRef<UnlistenFn | null>(null);
     const retryTimeoutRef = useRef<number | null>(null);
+    const retryCountRef = useRef(0);
 
     // Setup event listeners
     useEffect(() => {
@@ -93,6 +94,10 @@ export function useUpdater(): UseUpdaterReturn {
     }, []);
     */
 
+
+
+    // ...
+
     const handleError = useCallback((err: unknown, code: UpdateError['code'] = 'unknown') => {
         const message = err instanceof Error ? err.message : String(err);
         const isNetworkError = message.toLowerCase().includes('network') ||
@@ -102,23 +107,25 @@ export function useUpdater(): UseUpdaterReturn {
         const updateError: UpdateError = {
             code: isNetworkError ? 'network' : code,
             message,
-            retryable: isNetworkError && retryCount < MAX_RETRIES,
+            retryable: isNetworkError && retryCountRef.current < MAX_RETRIES,
         };
 
         setError(updateError);
         setStatus('error');
 
         // Auto-retry for network errors
-        if (updateError.retryable && retryCount < MAX_RETRIES) {
-            const delay = RETRY_DELAY_BASE * Math.pow(2, retryCount);
-            console.log(`[Updater] Retrying in ${delay}ms (attempt ${retryCount + 1}/${MAX_RETRIES})`);
+        if (updateError.retryable) {
+            const currentRetry = retryCountRef.current;
+            const delay = RETRY_DELAY_BASE * Math.pow(2, currentRetry);
+            console.log(`[Updater] Retrying in ${delay}ms (attempt ${currentRetry + 1}/${MAX_RETRIES})`);
 
             retryTimeoutRef.current = window.setTimeout(() => {
-                setRetryCount(prev => prev + 1);
+                retryCountRef.current += 1;
+                setRetryCount(retryCountRef.current); // Sync for UI
                 checkForUpdates();
             }, delay);
         }
-    }, [retryCount]);
+    }, []); // No dependencies needed as we use refs
 
     const checkForUpdates = useCallback(async () => {
         try {
@@ -130,9 +137,11 @@ export function useUpdater(): UseUpdaterReturn {
             if (result) {
                 setUpdateInfo(result);
                 setStatus('available');
-                setRetryCount(0); // Reset retry count on success
+                retryCountRef.current = 0;
+                setRetryCount(0);
             } else {
                 setStatus('up-to-date');
+                retryCountRef.current = 0;
                 setRetryCount(0);
             }
         } catch (err) {

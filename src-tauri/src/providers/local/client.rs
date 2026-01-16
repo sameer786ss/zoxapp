@@ -14,6 +14,7 @@ use futures::stream;
 use crate::providers::{
     ModelProvider, CompletionResult, ProviderCapabilities, ModelTier, Message
 };
+use tauri::{AppHandle, Emitter};
 use crate::setup::paths::get_model_path;
 
 use candle_core::Device;
@@ -70,16 +71,18 @@ struct LoadedModel {
 
 /// Local model provider using Candle GGUF
 /// Named LocalLlamaProvider for compatibility with existing code
+#[derive(Clone)]
 pub struct LocalLlamaProvider {
     state: Arc<RwLock<ProviderState>>,
     model: Arc<RwLock<Option<LoadedModel>>>,
     model_path: Arc<RwLock<Option<PathBuf>>>,
     device_name: String,
+    app_handle: Option<AppHandle>,
 }
 
 impl LocalLlamaProvider {
     /// Create new local provider
-    pub fn new() -> Self {
+    pub fn new(app_handle: Option<AppHandle>) -> Self {
         let device_name = Self::detect_device_name();
         
         println!("[LocalLlamaProvider] Created with device: {}", device_name);
@@ -89,12 +92,18 @@ impl LocalLlamaProvider {
             model: Arc::new(RwLock::new(None)),
             model_path: Arc::new(RwLock::new(None)),
             device_name,
+            app_handle,
         }
     }
     
-    /// Alias for new() - for compatibility
+    /// Create with defaults (no handle initially)
     pub fn with_defaults() -> Self {
-        Self::new()
+        Self::new(None)
+    }
+
+    /// Create with handle
+    pub fn with_handle(handle: AppHandle) -> Self {
+        Self::new(Some(handle))
     }
     
     /// Detect best available device name
@@ -149,6 +158,10 @@ impl LocalLlamaProvider {
     pub async fn load_model(&self, model_path: PathBuf) -> Result<(), String> {
         println!("[LocalLlamaProvider] Loading model from: {:?}", model_path);
         
+        if let Some(app) = &self.app_handle {
+            app.emit("model-load-progress", 5).ok();
+        }
+
         if !model_path.exists() {
             return Err(format!("Model file not found: {:?}", model_path));
         }
@@ -156,13 +169,19 @@ impl LocalLlamaProvider {
         // Set state to loading
         *self.state.write().await = ProviderState::Loading;
         
+        if let Some(app) = &self.app_handle {
+            app.emit("model-load-progress", 10).ok();
+        }
+
         // Store model path
         *self.model_path.write().await = Some(model_path.clone());
         
         // Load in blocking task
         let model_path_clone = model_path.clone();
+        let app_handle_clone = self.app_handle.clone();
+        
         let result = tokio::task::spawn_blocking(move || {
-            Self::load_model_sync(model_path_clone)
+            Self::load_model_sync(model_path_clone, app_handle_clone)
         })
         .await
         .map_err(|e| format!("Task join error: {}", e))?;
@@ -171,24 +190,37 @@ impl LocalLlamaProvider {
             Ok(loaded) => {
                 *self.model.write().await = Some(loaded);
                 *self.state.write().await = ProviderState::Ready;
+                
+                if let Some(app) = &self.app_handle {
+                    app.emit("model-load-progress", 100).ok();
+                    app.emit("model-load-complete", true).ok();
+                }
+                
                 println!("[LocalLlamaProvider] Model loaded successfully");
                 Ok(())
             }
             Err(e) => {
                 *self.state.write().await = ProviderState::Error;
+                if let Some(app) = &self.app_handle {
+                    app.emit("model-load-error", e.clone()).ok();
+                }
                 Err(e)
             }
         }
     }
     
     /// Synchronous model loading
-    fn load_model_sync(model_path: PathBuf) -> Result<LoadedModel, String> {
+    fn load_model_sync(model_path: PathBuf, app_handle: Option<AppHandle>) -> Result<LoadedModel, String> {
         // Get device
         let device = Self::get_device()
             .map_err(|e| format!("Failed to get device: {}", e))?;
         
         println!("[LocalLlamaProvider] Using device: {:?}", device);
         
+        if let Some(app) = &app_handle {
+            app.emit("model-load-progress", 20).ok();
+        }
+
         // Open and read GGUF file
         let file = File::open(&model_path)
             .map_err(|e| format!("Failed to open model file: {}", e))?;
@@ -347,7 +379,14 @@ impl LocalLlamaProvider {
     /// Internal generation method
     async fn generate(&self, system_prompt: &str, messages: &[Message], is_turbo: bool) -> Result<String, String> {
         if !self.is_loaded().await {
-            return Err("Model not loaded. Please download the model first.".to_string());
+            // Auto-load if default model exists
+            let default_path = get_default_model_path();
+            if default_path.exists() {
+                println!("[LocalLlamaProvider] Auto-loading default model...");
+                self.load_model(default_path).await?;
+            } else {
+                return Err("Model not loaded. Please download the model first.".to_string());
+            }
         }
         
         let prompt = Self::format_messages(system_prompt, messages, is_turbo);
@@ -368,7 +407,7 @@ impl LocalLlamaProvider {
 
 impl Default for LocalLlamaProvider {
     fn default() -> Self {
-        Self::new()
+        Self::new(None)
     }
 }
 

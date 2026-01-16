@@ -133,7 +133,7 @@ impl AgentActor {
         let provider: Box<dyn ModelProvider> = match connection_mode {
             ConnectionMode::Offline => {
                 println!("[AgentActor] Using LOCAL provider (offline mode)");
-                Box::new(LocalLlamaProvider::with_defaults())
+                Box::new(LocalLlamaProvider::with_handle(app_handle.clone()))
             }
             ConnectionMode::Cloud => {
                 println!("[AgentActor] Using CLOUD provider");
@@ -361,9 +361,33 @@ impl AgentActor {
                     
                     if is_offline {
                         // Switch to local provider
-                        self.provider = Box::new(LocalLlamaProvider::with_defaults());
+                        // Use explicit type to ensure we can clone before boxing
+                        let local_provider = LocalLlamaProvider::with_handle(self.app_handle.clone());
+                        
+                        // Auto-load trigger: Load immediately in background if model exists
+                        if crate::providers::local::is_model_available() {
+                            let provider_clone = local_provider.clone();
+                            let path = crate::providers::local::get_default_model_path();
+                            let app = self.app_handle.clone();
+                            
+                            self.emit_status("Loading local model...").await;
+                            
+                            tokio::spawn(async move {
+                                if let Err(e) = provider_clone.load_model(path).await {
+                                    eprintln!("[AgentActor] Background load failed: {}", e);
+                                    app.emit("agent-status", format!("Load failed: {}", e)).ok();
+                                } else {
+                                    app.emit("agent-status", "Local model ready").ok();
+                                }
+                            });
+                        }
+                        
+                        self.provider = Box::new(local_provider);
                         println!("[AgentActor] Switched to LOCAL provider");
-                        self.emit_status("Switched to offline mode").await;
+                        // Status emitted above or fallback below
+                        if !crate::providers::local::is_model_available() {
+                             self.emit_status("Switched to offline mode").await;
+                        }
                     } else {
                         // Switch to cloud provider
                         self.provider = Box::new(CloudProvider::new(self.api_keys.clone()));
@@ -745,7 +769,7 @@ impl AgentActor {
                     move || {
                         match get_tool_by_name(&tool_name) {
                             Some(tool_impl) => tool_impl.execute(&params, &workspace),
-                            None => Err(format!("Tool {} not found during execution", tool_name).into())
+                            None => format!("Error: Tool {} not found during execution", tool_name)
                         }
                     }
                 })
