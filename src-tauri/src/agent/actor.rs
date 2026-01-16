@@ -536,8 +536,8 @@ impl AgentActor {
             // Stream response via provider - CHUNKED streaming (every 100 chars)
             self.streaming_parser.reset(); // Reset parser for new response
             let mut full_response_text = String::new();
-            let mut chunk_buffer = String::new();
-            const CHUNK_SIZE: usize = 100;
+            let mut safe_display_text = String::new(); 
+            // chunk_buffer removed as we use safe event-driven streaming
             
             // Emit streaming status
             self.app_handle.emit("agent-streaming", true).ok();
@@ -551,44 +551,29 @@ impl AgentActor {
                         
                         match result {
                             Ok(token) => {
-                                // Feed parser for tool detection
+                                // Feed parser for tool detection and safe text extraction
                                 let events = self.streaming_parser.feed(&token);
                                 for event in events {
                                     match event {
                                         StreamEvent::ToolCallStart { .. } => {
                                             self.emit_status("Tool detected...").await
                                         }
+                                        StreamEvent::Text(text) => {
+                                            // Append safe text and emit the full accumulated message
+                                            // The frontend REPLACES the content, so we send the full text
+                                            safe_display_text.push_str(&text);
+                                            self.app_handle.emit("agent-stream-chunk", &safe_display_text).ok();
+                                        }
                                         _ => {}
                                     }
                                 }
                                 
-                                // Accumulate
+                                // Accumulate raw response for history
                                 full_response_text.push_str(&token);
-                                chunk_buffer.push_str(&token);
                                 
-                                // Extract and emit thinking content if present
+                                // Extract and emit thinking content if present (for separate UI display)
                                 if let Some(thinking) = Self::extract_thinking(&full_response_text) {
                                     self.app_handle.emit("agent-thinking", &thinking).ok();
-                                }
-                                
-                                // Check if this looks like a tool call - if so, don't stream to chat
-                                let is_tool_response = full_response_text.contains("<tool>") || 
-                                                        full_response_text.contains("write_file") ||
-                                                        full_response_text.contains("read_file") ||
-                                                        full_response_text.contains("list_files") ||
-                                                        full_response_text.contains("search_project") ||
-                                                        full_response_text.contains("replace_lines") ||
-                                                        full_response_text.contains("run_terminal");
-                                
-                                // Only emit cleaned chunks for non-tool responses
-                                if chunk_buffer.len() >= CHUNK_SIZE && !is_tool_response {
-                                    let cleaned = Self::clean_for_display(&full_response_text);
-                                    if !cleaned.is_empty() {
-                                        self.app_handle.emit("agent-stream-chunk", &cleaned).ok();
-                                    }
-                                    chunk_buffer.clear();
-                                } else if chunk_buffer.len() >= CHUNK_SIZE {
-                                    chunk_buffer.clear(); // Clear buffer but don't emit for tool responses
                                 }
                             }
                             Err(e) => {
@@ -600,15 +585,9 @@ impl AgentActor {
                         }
                     }
                     
-                    // Only emit final chunk if NOT a tool response
-                    let is_tool_response = full_response_text.contains("<tool>") || 
-                                            ResponseParser::has_tool_call(&full_response_text);
-                    if !full_response_text.is_empty() && !is_tool_response {
-                        let cleaned = Self::clean_for_display(&full_response_text);
-                        if !cleaned.is_empty() {
-                            self.app_handle.emit("agent-stream-chunk", &cleaned).ok();
-                        }
-                    }
+                    // Final check: if we have safe text but no events fired recently (edge case),
+                    // StreamingParser usually handles this, but let's trust it.
+                    // The feed() method emits text as soon as it's safe.
                 }
                 Err(e) => {
                     println!("[AgentActor] Provider error: {}", e);

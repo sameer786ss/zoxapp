@@ -9,11 +9,11 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::hardware::{detect_gpu, GpuInfo};
 use crate::setup::downloader::{
-    download_file_with_resume, get_binaries_url, get_model_url, 
+    download_file_with_resume, get_binaries_url, get_model_url, get_tokenizer_url,
     load_download_state, DownloadController,
 };
 use crate::setup::extractor::{cleanup_temp_file, extract_zip};
-use crate::setup::paths::{ensure_directories, get_binaries_dir, get_model_path, get_temp_download_path, SetupStatus};
+use crate::setup::paths::{ensure_directories, get_binaries_dir, get_model_path, get_tokenizer_path, get_temp_download_path, SetupStatus};
 use crate::state::app_state::AppState;
 
 /// Global download controller for pause/resume
@@ -138,12 +138,13 @@ pub async fn download_model(app: AppHandle) -> Result<(), String> {
         *ctrl = Some(controller.clone());
     }
 
-    let url = get_model_url();
-    let dest = get_model_path();
+    // 1. Download Model
+    let model_url = get_model_url();
+    let model_dest = get_model_path();
 
     // Check for existing download state
     let resume_bytes = if let Some(state) = load_download_state("model").await {
-        if !state.is_complete && dest.exists() {
+        if !state.is_complete && model_dest.exists() {
             state.downloaded_bytes
         } else {
             0
@@ -152,12 +153,24 @@ pub async fn download_model(app: AppHandle) -> Result<(), String> {
         0
     };
 
-    // Download with resume support
-    match download_file_with_resume(url, &dest, "model", &app, &controller, resume_bytes).await {
+    println!("[Command] Starting model download");
+    match download_file_with_resume(model_url, &model_dest, "model", &app, &controller, resume_bytes).await {
         Ok(()) => {
-            app.emit("setup-complete", ()).ok();
             println!("[Command] Model download complete");
-            Ok(())
+            // 2. Download Tokenizer
+            let tok_url = get_tokenizer_url();
+            let tok_dest = get_tokenizer_path();
+            
+            println!("[Command] Starting tokenizer download");
+            // Simple download for tokenizer (it's small, no resume needed really, but consistent)
+            match download_file_with_resume(tok_url, &tok_dest, "tokenizer", &app, &controller, 0).await {
+                Ok(()) => {
+                    println!("[Command] Tokenizer download complete");
+                    app.emit("setup-complete", ()).ok();
+                    Ok(())
+                }
+                Err(e) => Err(format!("Tokenizer download failed: {}", e)),
+            }
         }
         Err(crate::setup::downloader::DownloadError::Paused) => {
             println!("[Command] Model download paused");

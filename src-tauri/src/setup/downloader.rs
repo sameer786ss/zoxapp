@@ -377,3 +377,8 @@ pub fn get_binaries_url(gpu_type: &str) -> &'static str {
 pub fn get_model_url() -> &'static str {
     "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf?download=true"
 }
+
+/// Get the tokenizer download URL
+pub fn get_tokenizer_url() -> &'static str {
+    "https://huggingface.co/unsloth/Llama-3.2-3B-Instruct/resolve/main/tokenizer.json?download=true"
+}

@@ -151,13 +151,27 @@ impl LocalLlamaProvider {
     
     /// Check if model is loaded
     pub async fn is_loaded(&self) -> bool {
-        *self.state.read().await == ProviderState::Ready
+        let state = *self.state.read().await;
+        println!("[LocalLlamaProvider] Checking state: {:?}", state);
+        state == ProviderState::Ready
     }
     
     /// Load a GGUF model from the specified path
     pub async fn load_model(&self, model_path: PathBuf) -> Result<(), String> {
         println!("[LocalLlamaProvider] Loading model from: {:?}", model_path);
         
+        // Logic check - if already loaded with same path, skip
+        {
+            let current_path = self.model_path.read().await;
+            let current_state = *self.state.read().await;
+            if let Some(p) = current_path.as_ref() {
+                if p == &model_path && current_state == ProviderState::Ready {
+                    println!("[LocalLlamaProvider] Model already loaded, skipping reload");
+                    return Ok(());
+                }
+            }
+        }
+
         if let Some(app) = &self.app_handle {
             app.emit("model-load-progress", 5).ok();
         }
@@ -377,15 +391,29 @@ impl LocalLlamaProvider {
     }
     
     /// Internal generation method
+    /// Internal generation method
     async fn generate(&self, system_prompt: &str, messages: &[Message], is_turbo: bool) -> Result<String, String> {
+        // Log current state
+        let current_state = *self.state.read().await;
+        println!("[LocalLlamaProvider] generate called. State: {:?}, Model loaded? {}", 
+            current_state, 
+            self.model.read().await.is_some()
+        );
+
         if !self.is_loaded().await {
-            // Auto-load if default model exists
-            let default_path = get_default_model_path();
-            if default_path.exists() {
-                println!("[LocalLlamaProvider] Auto-loading default model...");
-                self.load_model(default_path).await?;
+            // Check if model is actually loaded in memory despite state
+            if self.model.read().await.is_some() {
+                 println!("[LocalLlamaProvider] State is {:?} but model is in memory. Setting state to Ready.", current_state);
+                 *self.state.write().await = ProviderState::Ready;
             } else {
-                return Err("Model not loaded. Please download the model first.".to_string());
+                // Auto-load if default model exists
+                let default_path = get_default_model_path();
+                if default_path.exists() {
+                    println!("[LocalLlamaProvider] Auto-loading default model...");
+                    self.load_model(default_path).await?;
+                } else {
+                    return Err("Model not loaded. Please download the model first.".to_string());
+                }
             }
         }
         

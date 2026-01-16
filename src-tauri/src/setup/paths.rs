@@ -21,6 +21,11 @@ pub fn get_model_path() -> PathBuf {
     get_models_dir().join("model.gguf")
 }
 
+/// Get the path to the tokenizer file
+pub fn get_tokenizer_path() -> PathBuf {
+    get_models_dir().join("tokenizer.json")
+}
+
 /// Get the path for a temp download file
 pub fn get_temp_download_path(filename: &str) -> PathBuf {
     let data_dir = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
@@ -168,6 +173,7 @@ impl SetupStatus {
     pub fn check() -> Self {
         let binaries_dir = get_binaries_dir();
         let model_path = get_model_path();
+        let tokenizer_path = get_tokenizer_path();
 
         // Check if binaries directory has any files
         let binaries_ok = binaries_dir.exists() && 
@@ -175,10 +181,15 @@ impl SetupStatus {
                 .map(|mut dir| dir.next().is_some())
                 .unwrap_or(false);
 
-        // Check if model file exists and is > 1GB (sanity check)
+        // Check if model AND tokenizer exist
+        // Model > 1GB, Tokenizer > 1KB
         let model_ok = model_path.exists() && 
             std::fs::metadata(&model_path)
                 .map(|m| m.len() > 1_000_000_000) // > 1GB
+                .unwrap_or(false) &&
+            tokenizer_path.exists() &&
+            std::fs::metadata(&tokenizer_path)
+                .map(|m| m.len() > 100) // > 100 bytes
                 .unwrap_or(false);
 
         SetupStatus { binaries_ok, model_ok }

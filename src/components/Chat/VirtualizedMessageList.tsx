@@ -12,7 +12,7 @@ interface VirtualizedMessageListProps {
 
 export default function VirtualizedMessageList({ messages }: VirtualizedMessageListProps) {
     const scrollContainerRef = useRef<HTMLDivElement>(null);
-    const [isAtBottom, setIsAtBottom] = useState(true);
+
     const [showScrollButton, setShowScrollButton] = useState(false);
     const prevMessagesLengthRef = useRef(messages.length);
     const prevLastContentRef = useRef('');
@@ -20,7 +20,35 @@ export default function VirtualizedMessageList({ messages }: VirtualizedMessageL
     // Get streaming state from store
     const isStreaming = useAgentStore((state) => state.isStreaming);
 
-    // Scroll to bottom - simple and direct
+
+
+    // Track if we should auto-scroll
+    const shouldAutoScrollRef = useRef(true);
+
+    // Handle scroll events to detect user intent
+    const handleScroll = useCallback(() => {
+        const container = scrollContainerRef.current;
+        if (!container) return;
+
+        const { scrollTop, scrollHeight, clientHeight } = container;
+        const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+
+        // If user scrolls up significantly (>50px), disable auto-scroll
+        const isAtBottomNow = distanceFromBottom < 50;
+
+        setShowScrollButton(!isAtBottomNow);
+
+        // Update auto-scroll preference:
+        // - If at bottom, re-enable auto-scroll
+        // - If scrolled up, disable it (user wants to read history)
+        if (isAtBottomNow) {
+            shouldAutoScrollRef.current = true;
+        } else if (distanceFromBottom > 100) {
+            shouldAutoScrollRef.current = false;
+        }
+    }, []);
+
+    // Scroll to bottom helper
     const scrollToBottom = useCallback((instant = false) => {
         const container = scrollContainerRef.current;
         if (!container) return;
@@ -33,38 +61,23 @@ export default function VirtualizedMessageList({ messages }: VirtualizedMessageL
                 behavior: 'smooth'
             });
         }
+        shouldAutoScrollRef.current = true; // enhancing: manual scroll-to-bottom re-enables lock
     }, []);
-
-    // Check if user is at bottom
-    const checkIfAtBottom = useCallback(() => {
-        const container = scrollContainerRef.current;
-        if (!container) return true;
-
-        const threshold = 100; // pixels from bottom
-        const position = container.scrollHeight - container.scrollTop - container.clientHeight;
-        return position < threshold;
-    }, []);
-
-    // Handle scroll events
-    const handleScroll = useCallback(() => {
-        const atBottom = checkIfAtBottom();
-        setIsAtBottom(atBottom);
-        setShowScrollButton(!atBottom);
-    }, [checkIfAtBottom]);
 
     // Auto-scroll when new message is added
     useEffect(() => {
         if (messages.length > prevMessagesLengthRef.current) {
-            // New message added - scroll if we were at bottom
-            if (isAtBottom) {
-                scrollToBottom(false);
-            }
+            // New message added - ALWAYS snap to bottom for new messages
+            shouldAutoScrollRef.current = true;
+            scrollToBottom(false);
         }
         prevMessagesLengthRef.current = messages.length;
-    }, [messages.length, isAtBottom, scrollToBottom]);
+    }, [messages.length, scrollToBottom]);
 
     // Auto-scroll during streaming (content updates)
     useLayoutEffect(() => {
+        if (!isStreaming) return;
+
         const lastMessage = messages[messages.length - 1];
         if (!lastMessage) return;
 
@@ -74,17 +87,18 @@ export default function VirtualizedMessageList({ messages }: VirtualizedMessageL
 
         const contentChanged = lastContent.length !== prevLastContentRef.current.length;
 
-        // Force auto-scroll during streaming to keep view at bottom
-        // User requested strict auto-scroll that ignores manual scrolling during generation
-        if (isStreaming && contentChanged) {
-            // Use rAF to ensure DOM has updated with new content height
+        // Only scroll if content changed AND we are in "stick to bottom" mode
+        if (contentChanged && shouldAutoScrollRef.current) {
             requestAnimationFrame(() => {
-                scrollToBottom(true);
+                const container = scrollContainerRef.current;
+                if (container) {
+                    container.scrollTop = container.scrollHeight;
+                }
             });
         }
 
         prevLastContentRef.current = lastContent;
-    }, [messages, isStreaming, scrollToBottom]); // Removed isAtBottom dependency as we ignore it during streaming
+    }, [messages, isStreaming]);
 
     // Initial scroll to bottom
     useEffect(() => {
@@ -110,7 +124,7 @@ export default function VirtualizedMessageList({ messages }: VirtualizedMessageL
                 {/* Scroll to bottom button */}
                 {showScrollButton && (
                     <ScrollToBottomButton onClick={() => {
-                        setIsAtBottom(true);
+
                         setShowScrollButton(false);
                         scrollToBottom(true);
                     }} />
@@ -127,7 +141,7 @@ export default function VirtualizedMessageList({ messages }: VirtualizedMessageL
             handleScroll={handleScroll}
             showScrollButton={showScrollButton}
             onScrollToBottom={() => {
-                setIsAtBottom(true);
+
                 setShowScrollButton(false);
                 scrollToBottom(true);
             }}
@@ -175,11 +189,15 @@ function VirtualizedList({
     });
 
     // Scroll to end when virtualizer updates
+    // Removed to prevent conflict with parent's auto-scroll logic
+    // The parent manages scroll via scrollContainerRef directly
+    /*
     useEffect(() => {
         if (messages.length > 0) {
             virtualizer.scrollToIndex(messages.length - 1, { align: 'end' });
         }
     }, [messages.length]);
+    */
 
     return (
         <div className="relative h-full">

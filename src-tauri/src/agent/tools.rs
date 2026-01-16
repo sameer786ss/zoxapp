@@ -22,7 +22,10 @@ impl Tool for ReadFileTool {
         match serde_json::from_str::<serde_json::Value>(args) {
             Ok(v) => {
                 let rel_path = v["path"].as_str().unwrap_or(args);
-                match workspace.resolve_path(rel_path) {
+                // Sanitize: strip quotes and whitespace
+                let clean_path = rel_path.trim().trim_matches('"');
+                
+                match workspace.resolve_path(clean_path) {
                     Ok(path) => {
                         std::fs::read_to_string(&path)
                             .unwrap_or_else(|e| format!("Error reading '{}': {}", path.display(), e))
@@ -31,6 +34,7 @@ impl Tool for ReadFileTool {
                 }
             },
             Err(_) => {
+                // Fallback for non-JSON string
                 let clean_path = args.trim().trim_matches('"');
                 match workspace.resolve_path(clean_path) {
                     Ok(path) => {
@@ -64,6 +68,7 @@ impl Tool for WriteFileTool {
                 
                 match workspace.resolve_path(rel_path) {
                     Ok(path) => {
+                        println!("[WriteFileTool] Writing to: {}", path.display());
                         // Create parent directories if needed
                         if let Some(parent) = path.parent() {
                             if !parent.exists() {
@@ -179,6 +184,7 @@ impl Tool for SearchProjectTool {
                 }
                 
                 let path = workspace.get_workspace_dir();
+                println!("[SearchTool] Searching in: {} for query: '{}'", path.display(), query);
                 
                 let walker = WalkBuilder::new(path)
                     .hidden(false)
@@ -188,19 +194,31 @@ impl Tool for SearchProjectTool {
                 let mut output = String::new();
                 let mut match_count = 0;
                 let max_matches = 50;
+                let mut files_scanned = 0;
                 
                 for entry in walker.flatten() {
-                    if match_count >= max_matches { break; }
-                    
                     let file_path = entry.path();
                     if !file_path.is_file() { continue; }
+                    files_scanned += 1;
+
+                    let relative = file_path.strip_prefix(path).unwrap_or(file_path);
+                    let relative_str = relative.to_string_lossy();
+                    
+                    // Check filename match
+                    if relative_str.to_lowercase().contains(&query.to_lowercase()) {
+                        if match_count >= max_matches { break; }
+                        output.push_str(&format!(
+                            "Filename match: {}\n",
+                            relative.display()
+                        ));
+                        match_count += 1;
+                    }
                     
                     if let Ok(content) = std::fs::read_to_string(file_path) {
                         for (line_num, line) in content.lines().enumerate() {
                             if match_count >= max_matches { break; }
                             
                             if line.to_lowercase().contains(&query.to_lowercase()) {
-                                let relative = file_path.strip_prefix(path).unwrap_or(file_path);
                                 output.push_str(&format!(
                                     "{}:{}:{}\n",
                                     relative.display(),
@@ -211,10 +229,13 @@ impl Tool for SearchProjectTool {
                             }
                         }
                     }
+                    if match_count >= max_matches { break; }
                 }
                 
+                println!("[SearchTool] Scanned {} files, found {} matches", files_scanned, match_count);
+
                 if output.is_empty() {
-                    format!("No matches found for '{}'", query)
+                    format!("No matches found for '{}' (scanned {} files in {})", query, files_scanned, path.display())
                 } else {
                     format!("Found {} matches:\n{}", match_count, output)
                 }
