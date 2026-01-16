@@ -1,0 +1,77 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "ZOX",
+  "version": "0.1.0",
+  "identifier": "com.zox.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "ZOX",
+        "width": 1200,
+        "height": 800,
+        "decorations": false,
+        "transparent": true,
+        "center": true,
+        "minWidth": 800,
+        "minHeight": 600
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis",
+      "msi"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "publisher": "ZOX Team",
+    "copyright": "Copyright © 2026 ZOX. All rights reserved.",
+    "category": "DeveloperTool",
+    "shortDescription": "AI-Powered Coding Agent",
+    "longDescription": "ZOX is an intelligent coding agent that helps you write, edit, and understand code with AI assistance. Features cloud and offline modes with local model support.",
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "languages": [
+          "English"
+        ],
+        "displayLanguageSelector": false,
+        "startMenuFolder": "ZOX",
+        "installerIcon": "icons/icon.ico",
+        "compression": "lzma"
+      },
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "http://timestamp.digicert.com",
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "allowDowngrades": false
+    },
+    "resources": [],
+    "externalBin": []
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/sameer786ss/zox/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IERBRjE5NTkzMzI1MDFCQjUKUldTMUcxQXlrNVh4MnJsZ3VBV2VtZHREQWw3QUFlZmVyamFVQ0JkTXNlQk9PMkxHeVJ6bjhURzAK"
+    }
+  }
+}

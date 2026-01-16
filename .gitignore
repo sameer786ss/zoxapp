@@ -1,0 +1,84 @@
+# =============================================
+# CRITICAL: EXCLUDE ALL LARGE FILES
+# =============================================
+
+# Dependencies - DO NOT COMMIT
+node_modules/
+.pnpm-store/
+
+# Build outputs - Regenerated on build
+dist/
+target/
+src-tauri/target/
+
+# Large ML cache files - DO NOT COMMIT (78MB+)
+src-tauri/.fastembed_cache/
+*.gguf
+*.bin
+*.safetensors
+*.onnx
+*.ot
+*.pt
+*.pth
+
+# Tauri signing keys - KEEP SECRET
+~/.tauri/
+*.key
+!*.key.pub
+
+# IDE settings
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-*
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Environment files
+.env
+.env.local
+.env*.local
+.env.development
+.env.production
+
+# Rust build artifacts
+*.pdb
+*.lib
+*.dll
+*.so
+*.dylib
+*.a
+*.rlib
+
+# Lock files - Keep Cargo.lock, ignore package-lock
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Temporary files
+*.tmp
+*.temp
+*.cache
+.cache/
+
+# Debug
+debug/
+*.dSYM/
+
+# Tauri dev artifacts
+src-tauri/WixTools/
+src-tauri/gen/

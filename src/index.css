@@ -1,0 +1,673 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================
+   FLUENT DESIGN SYSTEM - Windows 11 Theme
+   ============================================ */
+
+/* CSS Variables for Fluent Design theming */
+@layer base {
+  :root {
+    /* Light mode (Fluent) */
+    --background: 0 0% 98%;
+    --foreground: 0 0% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 10%;
+    --primary: 202 80% 50%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 94%;
+    --secondary-foreground: 0 0% 20%;
+    --muted: 0 0% 94%;
+    --muted-foreground: 0 0% 45%;
+    --accent: 202 80% 50%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 0 0% 88%;
+    --input: 0 0% 88%;
+    --ring: 202 80% 50%;
+    --radius: 0.5rem;
+
+    /* Fluent specific */
+    --fluent-accent: 202 80% 50%;
+    --fluent-accent-light: 202 80% 60%;
+    --fluent-surface: 0 0% 100%;
+    --fluent-layer: 0 0% 96%;
+
+    --sidebar: 0 0% 96%;
+    --sidebar-foreground: 0 0% 20%;
+    --sidebar-primary: 202 80% 50%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 0 0% 92%;
+    --sidebar-accent-foreground: 0 0% 20%;
+    --sidebar-border: 0 0% 88%;
+    --sidebar-ring: 202 80% 50%;
+  }
+
+  .dark {
+    /* Material Dark Theme - Classic Grey */
+    --background: 0 0% 12%;
+    /* #1e1e1e */
+    --foreground: 0 0% 90%;
+    /* #e5e5e5 */
+    --card: 0 0% 15%;
+    /* #252526 */
+    --card-foreground: 0 0% 90%;
+    --popover: 0 0% 15%;
+    /* #252526 */
+    --popover-foreground: 0 0% 90%;
+    --primary: 207 90% 54%;
+    /* #2196F3 - Material Blue */
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 18%;
+    /* #2d2d30 */
+    --secondary-foreground: 0 0% 85%;
+    --muted: 0 0% 22%;
+    /* #383838 */
+    --muted-foreground: 0 0% 55%;
+    /* #8c8c8c */
+    --accent: 207 90% 54%;
+    /* #2196F3 */
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 65% 50%;
+    /* Red */
+    --destructive-foreground: 0 0% 100%;
+    --border: 0 0% 24%;
+    /* #3c3c3c */
+    --input: 0 0% 24%;
+    --ring: 207 90% 54%;
+
+    /* Material specific */
+    --fluent-accent: 207 90% 54%;
+    --fluent-accent-light: 207 90% 65%;
+    --fluent-surface: 0 0% 15%;
+    --fluent-layer: 0 0% 18%;
+
+    --sidebar: 0 0% 13%;
+    /* #212121 */
+    --sidebar-foreground: 0 0% 85%;
+    --sidebar-primary: 207 90% 54%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 0 0% 20%;
+    --sidebar-accent-foreground: 0 0% 90%;
+    --sidebar-border: 0 0% 24%;
+    --sidebar-ring: 207 90% 54%;
+  }
+}
+
+/* Base styles */
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* Global Styles */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background-color: transparent;
+  /* Important for Mica effect */
+  color: hsl(var(--foreground));
+  font-family: 'Segoe UI Variable', 'Segoe UI', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+}
+
+/* Enable dark mode by default */
+html {
+  color-scheme: dark;
+}
+
+body {
+  @apply dark;
+}
+
+/* ============================================
+   FLUENT MOTION SYSTEM
+   ============================================ */
+:root {
+  --ease-fluent: cubic-bezier(0.1, 0.9, 0.2, 1);
+  --ease-fluent-decelerate: cubic-bezier(0, 0, 0, 1);
+  --ease-fluent-accelerate: cubic-bezier(1, 0, 1, 1);
+  --duration-ultra-fast: 50ms;
+  --duration-faster: 100ms;
+  --duration-fast: 150ms;
+  --duration-normal: 200ms;
+  --duration-slow: 300ms;
+  --duration-slower: 400ms;
+}
+
+/* ============================================
+   FLUENT ELEVATION SYSTEM
+   ============================================ */
+.elevation-0 {
+  box-shadow: none;
+}
+
+.elevation-1 {
+  box-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.14),
+    0 0 2px rgba(0, 0, 0, 0.12);
+}
+
+.elevation-2 {
+  box-shadow:
+    0 4px 8px rgba(0, 0, 0, 0.14),
+    0 0 2px rgba(0, 0, 0, 0.12);
+}
+
+.elevation-3 {
+  box-shadow:
+    0 8px 16px rgba(0, 0, 0, 0.14),
+    0 0 2px rgba(0, 0, 0, 0.12);
+}
+
+.elevation-4 {
+  box-shadow:
+    0 16px 32px rgba(0, 0, 0, 0.14),
+    0 0 2px rgba(0, 0, 0, 0.12);
+}
+
+/* ============================================
+   SCROLLBAR STYLING (Fluent)
+   ============================================ */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Selection */
+::selection {
+  background-color: hsl(202 80% 50% / 0.4);
+}
+
+/* Focus visible for accessibility */
+:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+/* ============================================
+   FLUENT SURFACE MATERIALS
+   ============================================ */
+.surface-base {
+  background-color: hsl(var(--background));
+}
+
+.surface-card {
+  background-color: hsl(var(--card));
+}
+
+.surface-layer {
+  background-color: hsl(var(--fluent-layer));
+}
+
+/* Mica-compatible backdrop */
+.surface-mica {
+  background-color: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(0px);
+  /* Mica handles blur at OS level */
+}
+
+/* Acrylic-style backdrop for in-app use */
+.surface-acrylic {
+  background-color: rgba(32, 32, 32, 0.65);
+  backdrop-filter: blur(20px) saturate(125%);
+  -webkit-backdrop-filter: blur(20px) saturate(125%);
+}
+
+/* Smoke overlay for modals */
+.surface-smoke {
+  background-color: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(4px);
+}
+
+/* ============================================
+   FLUENT BORDER STYLING
+   ============================================ */
+.border-fluent {
+  border: 1px solid rgba(255, 255, 255, 0.0605);
+}
+
+.border-fluent-strong {
+  border: 1px solid rgba(255, 255, 255, 0.0955);
+}
+
+/* Card bottom border gradient (Fluent signature) */
+.border-fluent-card {
+  border: 1px solid rgba(255, 255, 255, 0.0605);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.0326);
+}
+
+/* ============================================
+   TEXT UTILITIES
+   ============================================ */
+.text-gradient-fluent {
+  background: linear-gradient(135deg, hsl(202 80% 60%) 0%, hsl(270 60% 60%) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.text-secondary {
+  color: hsl(var(--muted-foreground));
+}
+
+.text-tertiary {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+/* ============================================
+   FLUENT CONTROL STATES
+   ============================================ */
+.control-hover {
+  transition: background-color var(--duration-fast) var(--ease-fluent);
+}
+
+.control-hover:hover {
+  background-color: rgba(255, 255, 255, 0.0605);
+}
+
+.control-hover:active {
+  background-color: rgba(255, 255, 255, 0.0419);
+}
+
+/* ============================================
+   ANIMATIONS
+   ============================================ */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.shimmer {
+  background: linear-gradient(90deg,
+      rgba(255, 255, 255, 0) 0%,
+      rgba(255, 255, 255, 0.05) 50%,
+      rgba(255, 255, 255, 0) 100%);
+  background-size: 200% 100%;
+  animation: shimmer 2s infinite;
+}
+
+@keyframes pulse-glow {
+
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+.pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+/* Fade in animation */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in var(--duration-normal) var(--ease-fluent);
+}
+
+/* Slide up animation */
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-slide-up {
+  animation: slide-up var(--duration-normal) var(--ease-fluent);
+}
+
+/* Scale in animation (Fluent) */
+@keyframes scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.animate-scale-in {
+  animation: scale-in var(--duration-normal) var(--ease-fluent);
+}
+
+/* ============================================
+   MARKDOWN BODY STYLES
+   ============================================ */
+.markdown-body {
+  line-height: 1.6;
+}
+
+.markdown-body>*:first-child {
+  margin-top: 0;
+}
+
+.markdown-body>*:last-child {
+  margin-bottom: 0;
+}
+
+/* ============================================
+   TOAST CUSTOMIZATION
+   ============================================ */
+.void-toast {
+  font-family: 'Segoe UI Variable', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif !important;
+}
+
+/* ============================================
+   COMMAND PALETTE ANIMATION
+   ============================================ */
+[cmdk-dialog] {
+  animation: scale-in var(--duration-fast) var(--ease-fluent);
+}
+
+/* ============================================
+   PANEL RESIZE HANDLE
+   ============================================ */
+.resize-handle {
+  transition: background-color var(--duration-fast) var(--ease-fluent);
+}
+
+.resize-handle:hover {
+  background-color: hsl(var(--fluent-accent) / 0.3);
+}
+
+.resize-handle:active {
+  background-color: hsl(var(--fluent-accent) / 0.5);
+}
+
+/* ============================================
+   XTERM OVERRIDES
+   ============================================ */
+.xterm {
+  padding: 0;
+}
+
+.xterm-viewport {
+  scrollbar-width: thin;
+}
+
+.xterm-viewport::-webkit-scrollbar {
+  width: 8px;
+}
+
+.xterm-viewport::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+}
+
+/* ============================================
+   MONACO EDITOR OVERRIDES
+   ============================================ */
+.monaco-editor {
+  padding-top: 0 !important;
+}
+
+.monaco-editor .margin {
+  background-color: transparent !important;
+}
+
+/* ============================================
+   RADIX UI OVERRIDES
+   ============================================ */
+[data-radix-scroll-area-viewport] {
+  scrollbar-width: thin;
+}
+
+/* ============================================
+   BUTTON STATES (Fluent)
+   ============================================ */
+button {
+  transition: all var(--duration-fast) var(--ease-fluent);
+}
+
+button:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+/* ============================================
+   INPUT AUTOFILL STYLING
+   ============================================ */
+input:-webkit-autofill,
+textarea:-webkit-autofill {
+  -webkit-box-shadow: 0 0 0 1000px hsl(var(--card)) inset;
+  -webkit-text-fill-color: hsl(var(--foreground));
+}
+
+/* ============================================
+   LOADING DOTS ANIMATION
+   ============================================ */
+@keyframes loading-dots {
+
+  0%,
+  80%,
+  100% {
+    transform: scale(0.6);
+    opacity: 0.5;
+  }
+
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.loading-dot {
+  animation: loading-dots 1.4s infinite ease-in-out both;
+}
+
+.loading-dot:nth-child(1) {
+  animation-delay: -0.32s;
+}
+
+.loading-dot:nth-child(2) {
+  animation-delay: -0.16s;
+}
+
+.loading-dot:nth-child(3) {
+  animation-delay: 0s;
+}
+
+/* ============================================
+   RESPONSIVE ADJUSTMENTS
+   ============================================ */
+@media (max-width: 768px) {
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+}
+
+/* ============================================
+   TITLE BAR STYLES
+   ============================================ */
+.title-bar {
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.title-bar button,
+.title-bar a,
+.title-bar input {
+  -webkit-app-region: no-drag;
+}
+
+/* Window control buttons (Windows 11 style) */
+.window-control {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 100%;
+  transition: background-color var(--duration-faster) var(--ease-fluent);
+  -webkit-app-region: no-drag;
+}
+
+.window-control:hover {
+  background-color: rgba(255, 255, 255, 0.0605);
+}
+
+.window-control:active {
+  background-color: rgba(255, 255, 255, 0.0419);
+}
+
+.window-control-close:hover {
+  background-color: #c42b1c;
+}
+
+.window-control-close:active {
+  background-color: #b52a1c;
+}
+
+/* ============================================
+   BASE LAYER REFINEMENTS
+   ============================================ */
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-transparent text-foreground;
+  }
+}
+
+/* ============================================
+   PERFORMANCE OPTIMIZATIONS
+   ============================================ */
+
+/* GPU-accelerated animations for smooth UI */
+.gpu-accelerated {
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  will-change: transform, opacity;
+}
+
+/* Optimized input rendering */
+textarea,
+input[type="text"] {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Reduce paint areas during animations */
+.animate-container {
+  isolation: isolate;
+  contain: layout style paint;
+}
+
+/* Optimized scrolling */
+.smooth-scroll {
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+/* Hardware acceleration for modals and overlays */
+[data-state="open"],
+[data-radix-popper-content-wrapper] {
+  transform: translateZ(0);
+  will-change: transform, opacity;
+}
+
+/* Prevent layout thrash during streaming */
+.streaming-content {
+  contain: layout;
+  overflow-anchor: auto;
+}
+
+/* Optimized thinking animation */
+@keyframes thinking-pulse {
+  0%, 100% {
+    opacity: 0.5;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.02);
+  }
+}
+
+.thinking-pulse {
+  animation: thinking-pulse 1.5s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+/* Debounce visual flicker during rapid updates */
+.stable-content {
+  backface-visibility: hidden;
+  perspective: 1000px;
+}
+
+/* Low-power mode for idle states */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
