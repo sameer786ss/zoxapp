@@ -3,10 +3,13 @@
 
 mod agent;
 mod commands;
+mod error;
 mod hardware;
 mod providers;
 mod setup;
 mod state;
+
+pub use error::{ZoxError, ZoxResult};
 
 /// Library entry point for mobile platforms
 /// Desktop uses main.rs directly
@@ -57,10 +60,7 @@ pub fn run() {
             commands::agent_cmds::list_conversations,
             commands::agent_cmds::delete_conversation,
             commands::agent_cmds::load_conversation,
-            // File commands
-            commands::file_cmds::fast_read_file,
-            commands::file_cmds::fast_write_file,
-            commands::file_cmds::get_file_outline,
+            commands::agent_cmds::export_conversation,
             // Setup commands
             commands::setup_cmds::detect_gpu_cmd,
             commands::setup_cmds::check_setup_status,

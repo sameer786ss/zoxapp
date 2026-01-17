@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Wifi, WifiOff, Loader2, Download, AlertTriangle, Pause, Play, X } from 'lucide-react';
 import { useAgentStore, ConnectionMode, DownloadProgress } from '@/stores/useAgentStore';
+import ModelMemoryDisplay from '@/components/Common/ModelMemoryDisplay';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -17,6 +18,11 @@ import {
     DialogTitle,
 } from '@/components/ui/dialog';
 import { Progress } from '@/components/ui/progress';
+import {
+    HoverCard,
+    HoverCardContent,
+    HoverCardTrigger,
+} from "@/components/ui/hover-card";
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { toast } from '@/components/ui/sonner';
@@ -145,7 +151,7 @@ export default function ConnectionToggle() {
             });
 
             // Start binary download
-            await invoke('download_binaries', { gpuType: detectedGpuLocal.gpu_type });
+            await invoke('download_binaries', { gpu_type: detectedGpuLocal.gpu_type });
 
             // Start model download
             await invoke('download_model');
@@ -374,6 +380,27 @@ export default function ConnectionToggle() {
                                         : `${downloadProgress.eta_seconds}s remaining`}
                             </span>
                         </div>
+
+                        {/* VRAM Display during download/setup */}
+                        {connectionMode === 'offline' && detectedGpuLocal && (
+                            <div className="mb-4 flex justify-end">
+                                <HoverCard>
+                                    <HoverCardTrigger asChild>
+                                        <Badge variant="outline" className="cursor-help font-mono text-[10px] gap-1 hover:bg-muted">
+                                            <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                                            {detectedGpuLocal.vram_mb ? `${Math.round(detectedGpuLocal.vram_mb / 1024)}GB VRAM` : 'RAM'}
+                                        </Badge>
+                                    </HoverCardTrigger>
+                                    <HoverCardContent className="w-80 p-0" align="end">
+                                        <ModelMemoryDisplay
+                                            gpuType={detectedGpuLocal.gpu_type}
+                                            vramMb={detectedGpuLocal.vram_mb}
+                                            modelSize="4b"
+                                        />
+                                    </HoverCardContent>
+                                </HoverCard>
+                            </div>
+                        )}
 
                         {/* Control Buttons */}
                         <div className="flex gap-2">

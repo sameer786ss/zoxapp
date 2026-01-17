@@ -86,42 +86,85 @@ impl WorkspaceManager {
     }
 
     /// Resolve a relative path to an absolute path within the workspace
-    /// Validates that the path doesn't escape the workspace
+    /// Validates that the path doesn't escape the workspace using component normalization
     pub fn resolve_path(&self, relative_path: &str) -> Result<PathBuf, String> {
-        // If it's already an absolute path that's within workspace, use it
         let path = Path::new(relative_path);
         
-        if path.is_absolute() {
-            // Check if it's within our workspace
-            if path.starts_with(&self.workspace_dir) {
-                return Ok(path.to_path_buf());
-            }
-            // Otherwise, treat it as just the filename
-            let filename = path.file_name()
-                .ok_or("Invalid path")?;
-            return Ok(self.workspace_dir.join(filename));
-        }
-
-        // Resolve relative path
-        let full_path = self.workspace_dir.join(relative_path);
+        // 1. Normalize the path logic to remove components like '.' and '..'
+        // We do this purely logically so we don't depend on the file existing
+        let mut components = self.workspace_dir.components().map(|c| c.as_os_str()).collect::<Vec<_>>();
         
-        // Canonicalize to resolve .. and . (if parent exists)
-        let canonical = if full_path.parent().map(|p| p.exists()).unwrap_or(false) {
-            full_path.canonicalize().unwrap_or(full_path.clone())
+        // Handle absolute paths (must start with workspace)
+        let path_to_resolve = if path.is_absolute() {
+            if path.starts_with(&self.workspace_dir) {
+               // It's absolute and potentially inside, but might have '..' later
+               // We'll parse its components starting from root
+               path
+            } else {
+               // Absolute but outside? Treat as filename in workspace for safety
+               let filename = path.file_name().ok_or("Invalid path")?;
+               return Ok(self.workspace_dir.join(filename));
+            }
         } else {
-            full_path.clone()
+            path
         };
 
-        // Security: Ensure path is within workspace
-        if !canonical.starts_with(&self.workspace_dir) && 
-           !full_path.starts_with(&self.workspace_dir) {
-            return Err(format!(
-                "Path '{}' is outside workspace directory", 
-                relative_path
-            ));
+        // If it was relative, we essentially join it to workspace
+        // If it was absolute-in-workspace, we just process its components
+        // But to be consistent, let's just process the relative part if absolute
+        
+        let path_components = if path_to_resolve.is_absolute() {
+             // Strip the workspace prefix first? 
+             // Actually, easier: reset components to root and push ALL components of path_to_resolve
+             // Then normalize
+             components.clear();
+             path_to_resolve.components()
+        } else {
+             path.components()
+        };
+
+        for component in path_components {
+            match component {
+                std::path::Component::Prefix(_) => {
+                    // Start over if we hit a prefix (should handle absolute case if logic above allows)
+                    // But we handled absolute above.
+                }, 
+                std::path::Component::RootDir => {
+                    // If we encounter root dir in iteration, it means we are resetting to root
+                    // This implies an absolute path. 
+                    if components.is_empty() {
+                         components.push(std::ffi::OsStr::new("/")); // Unix simplified
+                    }
+                    // If we are appending to workspace, we shouldn't hit RootDir unless path was absolute
+                }, 
+                std::path::Component::CurDir => {}, // Ignore .
+                std::path::Component::ParentDir => {
+                    // Pop last component if possible
+                    if components.len() > self.workspace_dir.components().count() {
+                         components.pop();
+                    } else {
+                        // Attempt to pop workspace dir part - FORBIDDEN
+                        return Err(format!("Path '{}' escapes workspace directory", relative_path));
+                    }
+                },
+                std::path::Component::Normal(c) => {
+                    components.push(c);
+                }
+            }
         }
 
-        Ok(full_path)
+        // Reassemble
+        let mut result = PathBuf::new();
+        for c in components {
+            result.push(c);
+        }
+
+        // Final Verify (Paranoid Check)
+        if !result.starts_with(&self.workspace_dir) {
+             return Err(format!("Path '{}' resolved to outside workspace", relative_path));
+        }
+
+        Ok(result)
     }
 
     /// Start watching the workspace for file changes

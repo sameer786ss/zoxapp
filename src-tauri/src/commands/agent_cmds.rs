@@ -134,3 +134,39 @@ pub async fn load_conversation(
     history_manager.load_conversation(&id)
         .ok_or_else(|| format!("Conversation {} not found", id))
 }
+
+/// Export a conversation in specified format (json or markdown)
+#[tauri::command]
+pub async fn export_conversation(
+    id: String,
+    format: String,
+    state: State<'_, AppState>
+) -> Result<String, String> {
+    let workspace = state.get_workspace()
+        .ok_or_else(|| "Workspace not initialized".to_string())?;
+    
+    let history_manager = HistoryManager::new(workspace.get_history_dir());
+    let conversation = history_manager.load_conversation(&id)
+        .ok_or_else(|| format!("Conversation {} not found", id))?;
+    
+    match format.to_lowercase().as_str() {
+        "json" => {
+            serde_json::to_string_pretty(&conversation)
+                .map_err(|e| format!("Failed to serialize: {}", e))
+        }
+        "markdown" | "md" => {
+            let mut md = String::new();
+            md.push_str(&format!("# {}\n\n", conversation.title));
+            md.push_str(&format!("*Created: {}*\n\n", conversation.created_at));
+            md.push_str("---\n\n");
+            
+            for msg in &conversation.messages {
+                let role = if msg.role == "user" { "**User**" } else { "**Assistant**" };
+                md.push_str(&format!("{}:\n\n{}\n\n---\n\n", role, msg.content));
+            }
+            
+            Ok(md)
+        }
+        _ => Err(format!("Unsupported format: {}. Use 'json' or 'markdown'", format))
+    }
+}

@@ -1,10 +1,9 @@
-import { useState, Suspense, lazy, Component, ErrorInfo, ReactNode, useEffect, useRef } from 'react';
+import { useState, Suspense, lazy, Component, ErrorInfo, ReactNode, useEffect, useRef, memo, useMemo } from 'react';
 import MainLayout from '@/components/Layout/MainLayout';
 import ChatPanel from '@/components/Chat/ChatPanel';
 import { Toaster } from '@/components/ui/sonner';
 import CommandPalette from '@/components/Common/CommandPalette';
 import OnboardingScreen from '@/components/Onboarding/OnboardingScreen';
-import SplashScreen from '@/components/Onboarding/SplashScreen';
 import { useAgentStore, ConnectionMode } from '@/stores/useAgentStore';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { Loader2, AlertTriangle, RefreshCw } from 'lucide-react';
@@ -16,8 +15,8 @@ const MonacoWrapper = lazy(() => import('@/components/Editor/MonacoWrapper'));
 const ResizableLayout = lazy(() => import('@/components/Layout/ResizableLayout'));
 const TerminalPanel = lazy(() => import('@/components/Terminal/TerminalPanel'));
 
-// Loading fallback component
-function LoadingFallback() {
+// Loading fallback component - memoized for performance
+const LoadingFallback = memo(function LoadingFallback() {
   return (
     <div className="h-full w-full flex items-center justify-center bg-card/20">
       <div className="flex items-center gap-3 text-muted-foreground">
@@ -26,7 +25,7 @@ function LoadingFallback() {
       </div>
     </div>
   );
-}
+});
 
 // Error Boundary Component
 interface ErrorBoundaryProps {
@@ -102,8 +101,8 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   }
 }
 
-// Component-specific error fallback
-function EditorErrorFallback() {
+// Component-specific error fallback - memoized
+const EditorErrorFallback = memo(function EditorErrorFallback() {
   return (
     <div className="h-full w-full flex items-center justify-center bg-card/20">
       <div className="flex flex-col items-center gap-3 text-muted-foreground">
@@ -119,6 +118,11 @@ function EditorErrorFallback() {
       </div>
     </div>
   );
+});
+
+// Helper to hide HTML splash screen
+function hideHtmlSplash() {
+  window.dispatchEvent(new CustomEvent('zox-ready'));
 }
 
 function App() {
@@ -128,10 +132,10 @@ function App() {
   const [showOnboarding, setShowOnboarding] = useState(() => {
     return !localStorage.getItem('zox-onboarding-complete');
   });
-  const [isInitializing, setIsInitializing] = useState(true);
+  const [isReady, setIsReady] = useState(false);
   const unlistenRef = useRef<UnlistenFn | null>(null);
 
-  // Listen for app-ready event from backend
+  // Listen for app-ready event from backend and hide HTML splash
   useEffect(() => {
     // Notify backend that frontend is mounted and listeners are ready
     import('@tauri-apps/api/event').then(({ emit }) => {
@@ -139,14 +143,15 @@ function App() {
     });
 
     listen<boolean>('app-ready', () => {
-      // Small delay for smooth transition
-      setTimeout(() => setIsInitializing(false), 500);
+      setIsReady(true);
+      hideHtmlSplash();
     }).then(fn => { unlistenRef.current = fn; });
 
     // Fallback timeout in case backend doesn't emit
     const fallbackTimeout = setTimeout(() => {
       console.warn("Backend didn't respond to frontend_loaded, forcing startup");
-      setIsInitializing(false);
+      setIsReady(true);
+      hideHtmlSplash();
     }, 3500);
 
     return () => {
@@ -165,17 +170,18 @@ function App() {
 
   const handleOnboardingComplete = (_selectedMode: 'cloud' | 'offline') => {
     setShowOnboarding(false);
-    // If user selected offline, we'll let the ConnectionToggle handle the setup
   };
 
-  // Show splash screen during initialization
-  if (isInitializing) {
-    return (
-      <>
-        <SplashScreen onReady={() => setIsInitializing(false)} />
-        <Toaster />
-      </>
-    );
+  // Memoize layout props to prevent re-renders
+  const layoutProps = useMemo(() => ({
+    defaultLeftSize: 40,
+    defaultBottomSize: terminalMinimized ? 5 : 25,
+    showBottom: showTerminal,
+  }), [terminalMinimized, showTerminal]);
+
+  // While waiting for backend, return null (HTML splash is visible)
+  if (!isReady) {
+    return <Toaster />;
   }
 
   // Show onboarding for first-time users
@@ -234,9 +240,7 @@ function App() {
                         </Suspense>
                       )
                     }
-                    showBottom={showTerminal}
-                    defaultLeftSize={40}
-                    defaultBottomSize={terminalMinimized ? 5 : 25}
+                    {...layoutProps}
                   />
                 </ErrorBoundary>
               </Suspense>

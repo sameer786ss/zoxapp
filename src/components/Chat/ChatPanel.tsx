@@ -5,6 +5,7 @@ import { useAgent } from '@/hooks/useAgent';
 import VirtualizedMessageList from './VirtualizedMessageList';
 import SmartInputBox from './SmartInputBox';
 import ConnectionToggle from '@/components/Common/ConnectionToggle';
+import StreamingProgress from '@/components/Common/StreamingProgress';
 import { toast } from '@/components/ui/sonner';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -262,7 +263,24 @@ export default function ChatPanel() {
                 </div>
 
                 {/* Input Area - SmartInputBox handles all states */}
-                <div className="p-4 border-t border-border/40 bg-card/40">
+                <div className="p-4 border-t border-border/40 bg-card/40 relative">
+                    {/* Streaming Progress Indicator */}
+                    <AnimatePresence>
+                        {status === 'executing' && (
+                            <motion.div
+                                initial={{ opacity: 0, y: 10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, y: 10 }}
+                                className="absolute -top-12 left-0 right-0 z-10 flex justify-center pointer-events-none"
+                            >
+                                <StreamingProgress
+                                    startTime={Date.now()} // Ideally track actual start time in store
+                                    tokenCount={0} // We need to add token tracking to store
+                                />
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
+
                     <SmartInputBox
                         value={input}
                         onChange={setInput}

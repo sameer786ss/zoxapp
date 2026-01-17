@@ -330,7 +330,7 @@ impl LocalLlamaProvider {
         formatted
     }
     
-    /// Generate text (blocking)
+    /// Generate text (blocking) - returns full string
     fn generate_sync(
         model: &mut LoadedModel,
         prompt: &str,
@@ -417,6 +417,160 @@ impl LocalLlamaProvider {
         Ok(generated_text)
     }
     
+    /// Generate text with streaming - yields tokens via sender
+    /// OPTIMIZED: Uses KV-cache (prefill + decode loop)
+    fn generate_streaming(
+        model: &mut LoadedModel,
+        prompt: &str,
+        max_tokens: usize,
+        temperature: f32,
+        tx: std::sync::mpsc::Sender<Result<String, String>>,
+    ) -> Result<(), String> {
+        use candle_core::Tensor;
+        use rand::SeedableRng;
+        
+        // Tokenize input
+        let encoding = model.tokenizer.encode(prompt, true)
+            .map_err(|e| format!("Tokenization failed: {}", e))?;
+        let input_ids = encoding.get_ids();
+        
+        let mut tokens: Vec<u32> = input_ids.to_vec();
+        let mut index_pos = 0;
+        
+        let eos_token_id = model.tokenizer.token_to_id("<|im_end|>")
+            .or_else(|| model.tokenizer.token_to_id("</s>"))
+            .unwrap_or(2);
+        
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        
+        // PREFILL PHASE: Process strict prompt
+        let context_size = tokens.len();
+        let input = Tensor::new(&tokens[..], &model.device)
+            .map_err(|e| format!("Failed to create tensor: {}", e))?
+            .unsqueeze(0)
+            .map_err(|e| format!("Failed to unsqueeze: {}", e))?;
+            
+        let logits = model.weights.forward(&input, 0)
+            .map_err(|e| format!("Prefill forward failed: {}", e))?;
+            
+        let logits = logits.squeeze(0)
+            .map_err(|e| format!("Squeeze failed: {}", e))?;
+        let logits = logits.get(context_size - 1)
+            .map_err(|e| format!("Get last failed: {}", e))?;
+            
+        index_pos += context_size;
+        
+        // Sample first token
+        let mut next_token = if temperature <= 0.0 {
+            logits.argmax(0)
+                .map_err(|e| format!("Argmax failed: {}", e))?
+                .to_scalar::<u32>()
+                .map_err(|e| format!("To scalar failed: {}", e))?
+        } else {
+            let logits = (&logits / temperature as f64)
+                .map_err(|e| format!("Div failed: {}", e))?;
+            let probs = candle_nn::ops::softmax(&logits, 0)
+                .map_err(|e| format!("Softmax failed: {}", e))?;
+            let probs_vec: Vec<f32> = probs.to_vec1()
+                .map_err(|e| format!("To vec failed: {}", e))?;
+            
+            use rand::distributions::{Distribution, WeightedIndex};
+            let dist = WeightedIndex::new(&probs_vec)
+                .map_err(|e| format!("WeightedIndex failed: {}", e))?;
+            dist.sample(&mut rng) as u32
+        };
+        
+        tokens.push(next_token);
+        
+        if let Some(text) = model.tokenizer.decode(&[next_token], false).ok() {
+            if tx.send(Ok(text)).is_err() { return Ok(()); }
+        }
+
+        // DECODE PHASE: Token-by-token
+        for _ in 0..max_tokens {
+            if next_token == eos_token_id {
+                break;
+            }
+            
+            // Process ONLY the last token
+            let input = Tensor::new(&[next_token], &model.device)
+                .map_err(|e| format!("Failed to create tensor: {}", e))?
+                .unsqueeze(0)
+                .map_err(|e| format!("Failed to unsqueeze: {}", e))?;
+            
+            // Forward pass with correct position to use cache
+            let logits = model.weights.forward(&input, index_pos)
+                .map_err(|e| format!("Decode forward failed: {}", e))?;
+            
+            let logits = logits.squeeze(0)
+                .map_err(|e| format!("Squeeze failed: {}", e))?;
+            let logits = logits.get(0) // Only 1 token processed
+                .map_err(|e| format!("Get last failed: {}", e))?;
+                
+            index_pos += 1;
+            
+            next_token = if temperature <= 0.0 {
+                logits.argmax(0)
+                    .map_err(|e| format!("Argmax failed: {}", e))?
+                    .to_scalar::<u32>()
+                    .map_err(|e| format!("To scalar failed: {}", e))?
+            } else {
+                let logits = (&logits / temperature as f64)
+                    .map_err(|e| format!("Div failed: {}", e))?;
+                let probs = candle_nn::ops::softmax(&logits, 0)
+                    .map_err(|e| format!("Softmax failed: {}", e))?;
+                let probs_vec: Vec<f32> = probs.to_vec1()
+                    .map_err(|e| format!("To vec failed: {}", e))?;
+                
+                use rand::distributions::{Distribution, WeightedIndex};
+                let dist = WeightedIndex::new(&probs_vec)
+                    .map_err(|e| format!("WeightedIndex failed: {}", e))?;
+                dist.sample(&mut rng) as u32
+            };
+            
+            tokens.push(next_token);
+            
+            // Decode and send token
+            if let Some(text) = model.tokenizer.decode(&[next_token], false).ok() {
+                if tx.send(Ok(text)).is_err() {
+                    break;
+                }
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Generate with streaming support
+    fn generate_stream_impl(
+        model_arc: Arc<RwLock<Option<LoadedModel>>>,
+        prompt: String,
+        max_tokens: usize,
+        temperature: f32,
+    ) -> impl futures::Stream<Item = Result<String, String>> + Send {
+        let (tx, rx) = std::sync::mpsc::channel::<Result<String, String>>();
+        
+        // Spawn blocking task for generation
+        std::thread::spawn(move || {
+            let mut model_guard = futures::executor::block_on(model_arc.write());
+            if let Some(ref mut loaded) = *model_guard {
+                if let Err(e) = Self::generate_streaming(loaded, &prompt, max_tokens, temperature, tx.clone()) {
+                    let _ = tx.send(Err(e));
+                }
+            } else {
+                let _ = tx.send(Err("Model not loaded".to_string()));
+            }
+        });
+        
+        // Convert sync channel to async stream
+        futures::stream::unfold(rx, |rx| async move {
+            match rx.recv() {
+                Ok(result) => Some((result, rx)),
+                Err(_) => None, // Channel closed
+            }
+        })
+    }
+    
     /// Internal generation method
     /// Internal generation method
     async fn generate(&self, system_prompt: &str, messages: &[Message], is_turbo: bool) -> Result<String, String> {
@@ -471,7 +625,7 @@ impl ModelProvider for LocalLlamaProvider {
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
             supports_tools: true,
-            supports_streaming: false,
+            supports_streaming: true,  // Now supports streaming!
             supports_cascade: false,
             supports_summarization: false,
             max_context_tokens: 4096,
@@ -487,10 +641,22 @@ impl ModelProvider for LocalLlamaProvider {
         system_prompt: &str,
         messages: &[Message],
     ) -> Result<CompletionResult, String> {
-        let text = self.generate(system_prompt, messages, false).await?;
+        // Ensure model is loaded
+        if !self.is_loaded().await {
+            if self.model.read().await.is_some() {
+                *self.state.write().await = ProviderState::Ready;
+            } else {
+                let default_path = get_default_model_path();
+                if default_path.exists() {
+                    self.load_model(default_path).await?;
+                } else {
+                    return Err("Model not loaded. Please download the model first.".to_string());
+                }
+            }
+        }
         
-        // Return as single-chunk stream - use Box::pin for Unpin
-        let stream = stream::once(async move { Ok(text) });
+        let prompt = Self::format_messages(system_prompt, messages, false);
+        let stream = Self::generate_stream_impl(self.model.clone(), prompt, 2048, 0.7);
         Ok(CompletionResult::Stream(Box::pin(stream)))
     }
     
@@ -499,10 +665,22 @@ impl ModelProvider for LocalLlamaProvider {
         system_prompt: &str,
         messages: &[Message],
     ) -> Result<CompletionResult, String> {
-        let text = self.generate(system_prompt, messages, true).await?;
+        // Ensure model is loaded
+        if !self.is_loaded().await {
+            if self.model.read().await.is_some() {
+                *self.state.write().await = ProviderState::Ready;
+            } else {
+                let default_path = get_default_model_path();
+                if default_path.exists() {
+                    self.load_model(default_path).await?;
+                } else {
+                    return Err("Model not loaded. Please download the model first.".to_string());
+                }
+            }
+        }
         
-        // Return as single-chunk stream - use Box::pin for Unpin
-        let stream = stream::once(async move { Ok(text) });
+        let prompt = Self::format_messages(system_prompt, messages, true);
+        let stream = Self::generate_stream_impl(self.model.clone(), prompt, 2048, 0.7);
         Ok(CompletionResult::Stream(Box::pin(stream)))
     }
     

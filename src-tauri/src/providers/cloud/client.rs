@@ -106,13 +106,57 @@ impl GemmaClient {
         self.model_tier
     }
     
-    /// Stream a completion - PRESERVED from original implementation
+    /// Stream a completion with retry and exponential backoff
     /// 
     /// # Arguments
     /// * `system_prompt` - The system instruction
     /// * `messages` - Conversation history
     /// * `is_turbo` - Whether this is turbo/agent mode (affects temperature)
     pub async fn stream_completion(
+        &self,
+        system_prompt: &str,
+        messages: &[Message],
+        is_turbo: bool,
+    ) -> Result<impl futures::Stream<Item = Result<String, String>>, String> {
+        const MAX_RETRIES: u32 = 3;
+        const BASE_DELAY_MS: u64 = 500;
+        
+        let mut last_error = String::new();
+        
+        for attempt in 0..MAX_RETRIES {
+            match self.stream_completion_inner(system_prompt, messages, is_turbo).await {
+                Ok(stream) => return Ok(stream),
+                Err(e) => {
+                    last_error = e.clone();
+                    
+                    // Check if retryable
+                    let retryable = e == "RATE_LIMIT" || 
+                                   e.contains("timeout") || 
+                                   e.contains("connection") ||
+                                   e.contains("network");
+                    
+                    if !retryable || attempt == MAX_RETRIES - 1 {
+                        break;
+                    }
+                    
+                    // Exponential backoff: 500ms, 1000ms, 2000ms
+                    let delay = BASE_DELAY_MS * (2_u64.pow(attempt));
+                    println!("[GemmaClient] Retry {} after {}ms due to: {}", attempt + 1, delay, e);
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                    
+                    // Rotate key on rate limit
+                    if e == "RATE_LIMIT" {
+                        self.key_manager.rotate();
+                    }
+                }
+            }
+        }
+        
+        Err(last_error)
+    }
+    
+    /// Internal stream implementation without retry
+    async fn stream_completion_inner(
         &self,
         system_prompt: &str,
         messages: &[Message],
@@ -146,13 +190,10 @@ impl GemmaClient {
 
         // Append conversation history - MAP ROLES to valid Gemma roles (user/model only)
         for msg in messages {
-            // Gemma only supports "user" and "model" roles
-            // Map: user -> user, model/assistant -> model
-            // IMPORTANT: Tool results should be "user" so model sees them as observations
             let gemma_role = match msg.role.as_str() {
-                "user" | "tool" => "user",  // Tool results are observations from user perspective
+                "user" | "tool" => "user",
                 "model" | "assistant" => "model",
-                _ => "user", // Fallback to user for any unknown role
+                _ => "user",
             };
             
             contents.push(serde_json::json!({
@@ -161,7 +202,6 @@ impl GemmaClient {
             }));
         }
 
-        // Build request config - Gemma 3 doesn't support JSON mode, parser handles JSON extraction
         let generation_config = serde_json::json!({
             "temperature": if is_turbo { 0.4 } else { 0.8 },
             "topP": 0.95,
@@ -188,21 +228,28 @@ impl GemmaClient {
             .json(&request_body)
             .send()
             .await
-            .map_err(|e| format!("Request failed: {}", e))?;
+            .map_err(|e| {
+                if e.is_timeout() {
+                    "Request timeout".to_string()
+                } else if e.is_connect() {
+                    "connection error".to_string()
+                } else {
+                    format!("Request failed: {}", e)
+                }
+            })?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
             
             if status.as_u16() == 429 {
-                self.key_manager.rotate();
                 return Err("RATE_LIMIT".to_string());
             }
             
             return Err(format!("API Error {}: {}", status, body));
         }
 
-        // Process SSE stream - EXACT same parsing as original
+        // Process SSE stream
         let stream = resp.bytes_stream().map(|chunk_result| {
             match chunk_result {
                 Ok(bytes) => {

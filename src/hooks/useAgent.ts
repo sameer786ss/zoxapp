@@ -195,7 +195,7 @@ export function useAgent() {
         try {
             await invoke('start_agent_task', {
                 task: prompt,
-                isTurbo: currentMode === 'turbo'
+                is_turbo: currentMode === 'turbo'
             });
         } catch (err) {
             console.error('Failed to start agent:', err);

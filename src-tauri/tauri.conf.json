@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: https://* blob: data:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' http://localhost:* https://api.openai.com https://anthropic.com;"
     }
   },
   "bundle": {

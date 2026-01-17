@@ -8,23 +8,28 @@ use std::collections::HashMap;
 
 /// Parsed result from the model's response
 #[derive(Debug, Clone)]
+pub struct ToolCallData {
+    pub tool: String,
+    pub parameters: Value,
+    pub thinking: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub enum ParsedResponse {
     /// Plain text response (no tool call)
     Text(String),
     
-    /// Tool call with optional thinking
-    ToolCall {
-        thinking: Option<String>,
-        tool: String,
-        parameters: Value,
+    /// Tool calls (one or more)
+    ToolCalls {
+        calls: Vec<ToolCallData>,
+        thinking: Option<String>, // Global thinking or first thinking
     },
     
-    /// Mixed: some text followed by a tool call
-    TextThenTool {
+    /// Mixed: text followed by tool calls
+    TextThenTools {
         text: String,
+        calls: Vec<ToolCallData>,
         thinking: Option<String>,
-        tool: String,
-        parameters: Value,
     },
 }
 
@@ -39,23 +44,29 @@ impl ResponseParser {
         let cleaned = Self::clean_response(response);
         
         // Try to find tool XML in the response
-        if let Some(tool_data) = Self::find_tool_xml(&cleaned) {
-            let (before_xml, thinking, tool_name, params) = tool_data;
+        // Try to find tool XML in the response (supports multiple)
+        let tool_calls = Self::find_all_tools(&cleaned);
+        
+        if !tool_calls.is_empty() {
+            // Check for text before the first tool
+            let first_tool_start = cleaned.find("<tool>").unwrap_or(0);
+            let before_xml = &cleaned[..first_tool_start];
+            
+            // Extract global thinking if present before tools
+            let thinking = Self::extract_tag_content(&cleaned, "thinking");
             
             if before_xml.trim().is_empty() {
                 // Pure tool response
-                ParsedResponse::ToolCall {
+                ParsedResponse::ToolCalls {
+                    calls: tool_calls,
                     thinking,
-                    tool: tool_name,
-                    parameters: params,
                 }
             } else {
-                // Text before tool
-                ParsedResponse::TextThenTool {
+                // Text before tools
+                ParsedResponse::TextThenTools {
                     text: before_xml.trim().to_string(),
+                    calls: tool_calls,
                     thinking,
-                    tool: tool_name,
-                    parameters: params,
                 }
             }
         } else {
@@ -106,36 +117,75 @@ impl ResponseParser {
         cleaned.trim().to_string()
     }
     
-    /// Find XML tool call in response
-    /// Returns (text_before, thinking, tool_name, parameters) if found
+    /// Find ALL XML tool calls in response
+    fn find_all_tools(response: &str) -> Vec<ToolCallData> {
+        let mut calls = Vec::new();
+        let mut current_pos = 0;
+        
+        while let Some(tool_start) = response[current_pos..].find("<tool>") {
+            let absolute_start = current_pos + tool_start;
+            
+            // Find end of this tool tag
+            if let Some(tool_end_offset) = response[absolute_start..].find("</tool>") {
+                let absolute_end = absolute_start + tool_end_offset;
+                
+                // Extract tool name
+                let tool_name = response[absolute_start + 6..absolute_end].trim().to_string();
+                
+                // Look for params associated with THIS tool (must be after tool name)
+                // We assume params come immediately after or before the next tool
+                // Simpler approach: Look for <params> between this </tool> and next <tool> or end
+                
+                let search_area_start = absolute_end + 7; // after </tool>
+                
+                // Find parameters content
+                let params_str = if let Some(params_start) = response[search_area_start..].find("<params>") {
+                     if let Some(params_end) = response[search_area_start + params_start..].find("</params>") {
+                         let p_start = search_area_start + params_start + 8; // <params> len
+                         let p_end = search_area_start + params_start + params_end;
+                         response[p_start..p_end].trim().to_string()
+                     } else { String::new() }
+                } else if let Some(params_start) = response[search_area_start..].find("<parameters>") {
+                     if let Some(params_end) = response[search_area_start + params_start..].find("</parameters>") {
+                         let p_start = search_area_start + params_start + 12; // <parameters> len
+                         let p_end = search_area_start + params_start + params_end;
+                         response[p_start..p_end].trim().to_string()
+                     } else { String::new() }
+                } else { String::new() };
+                
+                let parameters = Self::parse_params(&params_str);
+                
+                // Find thinking specific to this tool? usually thinking is global.
+                // We'll leave per-tool thinking empty for now unless structured differently.
+                
+                calls.push(ToolCallData {
+                    tool: tool_name,
+                    parameters,
+                    thinking: None, 
+                });
+                
+                current_pos = search_area_start;
+            } else {
+                break;
+            }
+        }
+        
+        calls
+    }
+    
+    /// Find exact tool XML in response (Legacy helper, kept if needed but unused by parse now)
     fn find_tool_xml(response: &str) -> Option<(String, Option<String>, String, Value)> {
-        // Look for <tool> tag
-        let tool_start = response.find("<tool>")?;
-        let tool_end = response.find("</tool>")?;
-        
-        if tool_start >= tool_end {
-            return None;
+        // Implementation kept or removed? Let's keep for backward compat or just remove usage.
+        // Re-implement using find_all_tools logic partially or just leave it for tests/legacy detection.
+        let tools = Self::find_all_tools(response);
+        if let Some(first) = tools.first() {
+            let tool_start = response.find("<tool>")?;
+            let before = response[..tool_start].to_string();
+            let thinking = Self::extract_tag_content(response, "thinking");
+            Some((before, thinking, first.tool.clone(), first.parameters.clone()))
+        } else {
+            None
         }
-        
-        let tool_name = response[tool_start + 6..tool_end].trim().to_string();
-        if tool_name.is_empty() {
-            return None;
-        }
-        
-        let before_xml = &response[..tool_start];
-        
-        // Extract thinking if present
-        let thinking = Self::extract_tag_content(response, "thinking");
-        
-        // Extract parameters - try <params> or <parameters>
-        let params_str = Self::extract_tag_content(response, "params")
-            .or_else(|| Self::extract_tag_content(response, "parameters"))
-            .unwrap_or_default();
-        
-        // Parse parameters into Value
-        let parameters = Self::parse_params(&params_str);
-        
-        Some((before_xml.to_string(), thinking, tool_name, parameters))
     }
     
     /// Extract content between <tag> and </tag>

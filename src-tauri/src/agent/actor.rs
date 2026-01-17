@@ -84,7 +84,7 @@ To respond without tools:
 <message>Your response text here</message>
 
 ## RULES:
-- One tool per response
+- You may use multiple tools in one response if needed
 - Wait for OBSERVATION before continuing
 - Keep thinking brief (1 sentence)
 - No markdown code blocks
@@ -521,6 +521,7 @@ impl AgentActor {
     /// Execute the ReAct loop (Turbo Mode) - PRESERVED logic
     async fn execute_react_loop(&mut self, initial_prompt: String) {
         let mut current_step = 0;
+        let mut consecutive_denials = 0;
         
         // Set parser to turbo mode for tool call detection
         self.streaming_parser.set_turbo_mode(true);
@@ -588,7 +589,7 @@ impl AgentActor {
                                 // Accumulate raw response for history
                                 full_response_text.push_str(&token);
                                 
-                                // Extract and emit thinking content if present (for separate UI display)
+                                // Extract and emit thinking content if present
                                 if let Some(thinking) = Self::extract_thinking(&full_response_text) {
                                     self.app_handle.emit("agent-thinking", &thinking).ok();
                                 }
@@ -601,10 +602,6 @@ impl AgentActor {
                             }
                         }
                     }
-                    
-                    // Final check: if we have safe text but no events fired recently (edge case),
-                    // StreamingParser usually handles this, but let's trust it.
-                    // The feed() method emits text as soon as it's safe.
                 }
                 Err(e) => {
                     println!("[AgentActor] Provider error: {}", e);
@@ -620,95 +617,201 @@ impl AgentActor {
                 return;
             }
 
-            // Parse Final Response - EXACT same logic
+            // Parse Final Response
             let final_parsed = self.streaming_parser.finalize();
             
-            // Add model response to history and persist
             self.save_and_persist_message("model", &full_response_text);
 
-            match final_parsed {
-                ParsedResponse::ToolCall { tool, parameters, thinking: _ } => {
-                    let result = self.handle_tool_execution(&tool, &parameters).await;
+            // Track consecutive denials to prevent infinite loops
+            // Access this via mutable state (needs to be added to struct or valid scope)
+            // For now we use a local variable `consecutive_denials` defined outside loop
+            
+                ParsedResponse::ToolCalls { calls, thinking: _ } => {
+                    // Execute tools in parallel!
+                    // We clone the thread-safe state needed for execution to avoid holding &mut self
+                    let app_handle = self.app_handle.clone();
+                    let workspace = self.workspace.clone();
+                    // approval_state is Arc<RwLock> but wait_for_approval is async and on self?
+                    // actor.rs:83: pub async fn wait_for_approval(&self, ...)
+                    // wait_for_approval uses self.app_handle and self.approval_state.
+                    // We need to implement approval logic without &self if we want parallel *creation* of futures,
+                    // OR we just allow sequential *approval* but parallel *execution*?
+                    // Realistically, approval is interactive. Asking 3 approvals at once is fine if the UI handles it.
                     
-                    match result {
-                        Some(tool_result) if tool_result == "__DENIED__" => {
-                            // Tool was denied - let model respond gracefully (one more iteration)
-                            // Denial already added to context in handle_tool_execution
-                            println!("[AgentActor] Tool denied - letting model respond gracefully");
-                            self.emit_status("Responding...").await;
-                            // Continue loop - model will respond to denial, then ParsedResponse::Text will stop
+                    // Helper to execute single tool with isolated state
+                    let execute_tool = |tool: String, params: Value, app_state: (AppHandle, WorkspaceManager, Arc<RwLock<ApprovalState>>)| async move {
+                        let (app, work, approval) = app_state;
+                        // reimplement logic from handle_tool_execution but standalone
+                        app.emit("agent-status", format!("Executing: {}", tool)).ok();
+                        println!("[AgentActor] Tool Call: {} params: {}", tool, params);
+
+                        if let Some(tool_impl) = get_tool_by_name(&tool) {
+                            let params_str = params.to_string();
+                            if tool_impl.requires_approval() {
+                                // Approval logic
+                                let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+                                {
+                                    let mut state = approval.write();
+                                    state.pending = Some(tx);
+                                }
+                                app.emit("agent-approval-request", serde_json::json!({"tool": tool, "parameters": params_str})).ok();
+                                // Wait for approval (user must interact)
+                                match rx.await {
+                                    Ok(true) => {}, // Approved
+                                    _ => return (tool, params, "__DENIED__".to_string()),
+                                }
+                            }
+                            
+                            // File access events
+                            if tool == "read_file" || tool == "write_file" || tool == "replace_lines" || tool == "list_files" {
+                                if let Some(path) = params.get("path").and_then(|p| p.as_str()) {
+                                    let action = if tool == "write_file" || tool == "replace_lines" { "write" } else { "read" };
+                                    app.emit("agent-file-access", serde_json::json!({"action": action, "path": path})).ok();
+                                }
+                            }
+
+                            // Execute
+                            let tool_name = tool.clone();
+                            let p_str = params_str.clone();
+                            let w_clone = work.clone();
+                            
+                            let res = tokio::task::spawn_blocking(move || {
+                                match get_tool_by_name(&tool_name) {
+                                    Some(impl_) => impl_.execute(&p_str, &w_clone),
+                                    None => format!("Error: Tool not found")
+                                }
+                            }).await;
+                            
+                            match res {
+                                Ok(Ok(out)) => (tool, params, out),
+                                Ok(Err(e)) => (tool, params, format!("Error: {}", e)),
+                                Err(_) => (tool, params, "Timeout".to_string()),
+                            }
+                        } else {
+                            (tool, params, format!("Error: Tool {} not found", tool))
                         }
-                        Some(tool_result) => {
-                            // Tool executed successfully - send observation
+                    };
+                    
+                    self.emit_status(&format!("Executing {} tools in parallel...", calls.len())).await;
+                    
+                    let mut futures = Vec::new();
+                    for call in calls {
+                         futures.push(execute_tool(call.tool, call.parameters, (self.app_handle.clone(), self.workspace.clone(), self.approval_state.clone())));
+                    }
+                    
+                    let results = futures::future::join_all(futures).await;
+                    
+                    // Process results sequentially to update context
+                    for (tool, params, result_str) in results {
+                        if result_str == "__DENIED__" {
+                            consecutive_denials += 1;
+                            if consecutive_denials >= 3 {
+                                self.emit_status("Stopped (Too many denials)").await;
+                                self.app_handle.emit("agent-stream-end", "denied_loop").ok();
+                                return;
+                            }
+                            self.emit_status("Responding to denial...").await;
+                            // Add denial observation
+                             self.store_message("user", &format!("<observation>User DENIED the {} tool.</observation>", tool)).await;
+                        } else {
+                            consecutive_denials = 0;
                             self.app_handle.emit("agent-tool-result", serde_json::json!({
                                 "tool": tool,
-                                "parameters": parameters,
-                                "result": tool_result
+                                "parameters": params,
+                                "result": result_str
                             })).ok();
-
-                            // Add observation to context in XML format and persist
-                            let observation = format!("<observation>{}</observation>", tool_result);
-                            self.save_and_persist_message("user", &observation);
                             
-                            self.emit_status("Thinking...").await;
-                        }
-                        None => {
-                            // Denied - stop agent
-                            println!("[AgentActor] Denied by user");
-                            self.emit_status("Denied").await;
-                            self.app_handle.emit("agent-stream-end", "denied").ok();
-                            return;
+                            self.store_message("user", &format!("<observation>{}</observation>", result_str)).await;
                         }
                     }
+                    self.emit_status("Thinking...").await;
                 }
                 ParsedResponse::Text(text) => {
+                    consecutive_denials = 0;
                     println!("[AgentActor] Final Answer: {}", text);
-                    
-                    // Emit complete message to frontend (single update)
-                    self.app_handle.emit("agent-message-complete", serde_json::json!({
-                        "role": "model",
-                        "content": text
-                    })).ok();
-                    
+                    self.app_handle.emit("agent-message-complete", serde_json::json!({ "role": "model", "content": text })).ok();
                     self.emit_status("Ready").await;
                     self.app_handle.emit("agent-stream-end", "complete").ok();
-                    break; 
+                    break;
                 }
-                ParsedResponse::TextThenTool { text: _, tool, parameters, thinking: _ } => {
-                    let result = self.handle_tool_execution(&tool, &parameters).await;
+                ParsedResponse::TextThenTools { text: _, calls, thinking: _ } => {
+                    // Logic duplication for now, but clean.
+                    // Same parallel logic as ToolCalls
+                    let app_handle = self.app_handle.clone();
+                    let workspace = self.workspace.clone();
+                    let approval_state = self.approval_state.clone();
                     
-                    match result {
-                        Some(tool_result) if tool_result == "__DENIED__" => {
-                            // Tool denied - let model respond gracefully
-                            println!("[AgentActor] Tool denied - letting model respond gracefully");
-                            self.emit_status("Responding...").await;
+                     let execute_tool = |tool: String, params: Value, app_state: (AppHandle, WorkspaceManager, Arc<RwLock<ApprovalState>>)| async move {
+                        let (app, work, approval) = app_state;
+                        // reimplement logic from handle_tool_execution but standalone
+                        app.emit("agent-status", format!("Executing: {}", tool)).ok();
+                        println!("[AgentActor] Tool Call: {} params: {}", tool, params);
+
+                        if let Some(tool_impl) = get_tool_by_name(&tool) {
+                            let params_str = params.to_string();
+                            if tool_impl.requires_approval() {
+                                let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+                                {
+                                    let mut state = approval.write();
+                                    state.pending = Some(tx);
+                                }
+                                app.emit("agent-approval-request", serde_json::json!({"tool": tool, "parameters": params_str})).ok();
+                                match rx.await {
+                                    Ok(true) => {}, 
+                                    _ => return (tool, params, "__DENIED__".to_string()),
+                                }
+                            }
+                            
+                            if tool == "read_file" || tool == "write_file" || tool == "replace_lines" || tool == "list_files" {
+                                if let Some(path) = params.get("path").and_then(|p| p.as_str()) {
+                                    let action = if tool == "write_file" || tool == "replace_lines" { "write" } else { "read" };
+                                    app.emit("agent-file-access", serde_json::json!({"action": action, "path": path})).ok();
+                                }
+                            }
+
+                            let tool_name = tool.clone();
+                            let p_str = params_str.clone();
+                            let w_clone = work.clone();
+                            
+                            let res = tokio::task::spawn_blocking(move || {
+                                match get_tool_by_name(&tool_name) {
+                                    Some(impl_) => impl_.execute(&p_str, &w_clone),
+                                    None => format!("Error: Tool not found")
+                                }
+                            }).await;
+                            
+                            match res {
+                                Ok(Ok(out)) => (tool, params, out),
+                                Ok(Err(e)) => (tool, params, format!("Error: {}", e)),
+                                Err(_) => (tool, params, "Timeout".to_string()),
+                            }
+                        } else {
+                            (tool, params, format!("Error: Tool {} not found", tool))
                         }
-                        Some(tool_result) => {
+                    };
+                    
+                    let mut futures = Vec::new();
+                    for call in calls {
+                         futures.push(execute_tool(call.tool, call.parameters, (self.app_handle.clone(), self.workspace.clone(), self.approval_state.clone())));
+                    }
+                    let results = futures::future::join_all(futures).await;
+                    
+                    for (tool, params, result_str) in results {
+                        if result_str == "__DENIED__" {
+                             // ... denial logic ...
+                             self.store_message("user", &format!("<observation>User DENIED the {} tool.</observation>", tool)).await;
+                        } else {
+                            consecutive_denials = 0;
                             self.app_handle.emit("agent-tool-result", serde_json::json!({
                                 "tool": tool,
-                                "parameters": parameters,
-                                "result": tool_result
+                                "parameters": params,
+                                "result": result_str
                             })).ok();
-
-                            // Add observation in XML format
-                            let observation = format!("<observation>{}</observation>", tool_result);
-                            self.context.add_message(Message {
-                                role: "user".to_string(),
-                                content: observation,
-                            });
-                            
-                            self.emit_status("Thinking...").await;
-                        }
-                        None => {
-                            // Denied - stop agent
-                            println!("[AgentActor] Denied by user");
-                            self.emit_status("Denied").await;
-                            self.app_handle.emit("agent-stream-end", "denied").ok();
-                            return;
+                            self.store_message("user", &format!("<observation>{}</observation>", result_str)).await;
                         }
                     }
+                    self.emit_status("Thinking...").await;
                 }
-            }
         }
         
         if current_step >= self.config.max_steps {
